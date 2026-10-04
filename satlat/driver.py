@@ -27,6 +27,11 @@ def config_ops(img: H.Images) -> list[tuple[int, int]]:
         (D.R_RESETMULT, cfg.reset_multiplier),
         (D.R_PRUNE, H.prune_q16(cfg.prune)),
         (D.R_INVDECAY, H.fp_encode(1.0 / cfg.decay)),
+        (D.R_LOWCP, cfg.low_cls_pages),
+        (D.R_LOWLP, cfg.low_lit_pages),
+        (D.R_GLUE, cfg.glue_buckets),
+        (D.R_HFLAGS, (int(cfg.used_bit) << D.HF_USED) | (int(cfg.min_abstract) << D.HF_MINABS)),
+        (D.R_REPHASE, cfg.rephase),
     ]
 
 
@@ -48,6 +53,8 @@ def check_caps(bus, img: H.Images) -> None:
     caps = [bus.read(D.R_CAPS + i) for i in range(8)]
     if caps[6] != D.MAGIC:
         raise RuntimeError(f"no SAT accelerator at this address (magic {caps[6]:#x})")
+    if caps[7] < D.VERSION:
+        raise RuntimeError(f"bitstream version {caps[7]} predates design.py version {D.VERSION}")
     want = [D.N_MAX, D.C_MAX, D.LE_MAX, D.CE_MAX, D.MAX_LEARN, D.FRAC_W]
     if caps[:6] != want:
         raise RuntimeError(f"bitstream capacities {caps[:6]} != design.py {want}")

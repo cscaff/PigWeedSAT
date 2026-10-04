@@ -31,6 +31,20 @@ U55C-only resource):
   * saveData no longer grabs (and leaks) an extra clause page when a clause
     exactly fills its last page.
   * Prev-page pointers of initial literal pages are valid (see host.py).
+
+Heuristics beyond the HLS, each off by default (host.Config; host.pigweed()
+is the recommended set):
+  low_cls_pages/low_lit_pages  restart + prune when free memory runs low
+                               (decouples clause-DB reduction from Luby)
+  glue_buckets   _prune never takes from the lowest LBD buckets (Glucose)
+  used_bit       a clause resolved on in learn() since the last prune goes
+                 back to its bucket's tail once instead of being deleted (Kissat)
+  min_abstract   _minimize rejects a literal whose level has no literal in the
+                 clause, and stops a reason walk at its first failure; the
+                 learned clauses (and so the whole search) are unchanged
+  rephase        Kissat best phases: _save_best keeps the phases of the longest
+                 conflict-free trail; every `rephase` conflicts a restart
+                 resets all saved phases to best/original/best/inverted
 """
 
 from __future__ import annotations
@@ -148,6 +162,8 @@ class Stats:
     longest_simplified: int = 0
     check_cnt: int = 0
     deleted: int = 0
+    reduce: int = 0          # restarts forced by low clause memory
+    rephase: int = 0
     lbd: list[int] = field(default_factory=lambda: [0] * D.LBD_BUCKETS)
 
 
@@ -161,6 +177,11 @@ class Golden:
         self.RESET_MULT = cfg.reset_multiplier
         self.PRUNE = H.prune_q16(cfg.prune)
         self.INV_DECAY = H.fp_encode(1.0 / cfg.decay)
+        self.LOW_CP, self.LOW_LP = cfg.low_cls_pages, cfg.low_lit_pages
+        self.GLUE = cfg.glue_buckets
+        self.USED = cfg.used_bit
+        self.MIN_ABS = cfg.min_abstract
+        self.REPHASE = cfg.rephase
 
         self.ls = list(img.lit_store) + [0] * (D.LE_MAX - len(img.lit_store))
         self.cs = list(img.cls_store) + [0] * (D.CE_MAX - len(img.cls_store))
@@ -194,6 +215,13 @@ class Golden:
         self.buckets: list[list[int]] = [[] for _ in range(D.LBD_BUCKETS)]
         self.used_total = 0
         self.last_inserted = -1
+        self.used = [False] * D.C_MAX
+
+        # best phases: the longest conflict-free trail prefix since the last rephase
+        self.best = [1 - self.POS] * self.N
+        self.best_height = 0
+        self.rephase_at = self.REPHASE
+        self.rephase_k = 0
 
         # restartCalculator (Knuth's reluctant doubling, primed past luby(0))
         self.luby_u, self.luby_v = 2, 1
@@ -247,6 +275,31 @@ class Golden:
         else:
             self.luby_v = 2 * v
         return v
+
+    # --------------------------------------------------------- heuristics --
+    def _low_memory(self) -> bool:
+        return ((self.LOW_CP and self.free_cls_pages.size() < self.LOW_CP)
+                or (self.LOW_LP and self.free_lit_pages.size() < self.LOW_LP))
+
+    def _save_best(self, h):
+        """Kissat best phases: copy the conflict-free prefix stack[0:h] if it is the longest."""
+        if h <= self.best_height:
+            return
+        self.best_height = h
+        for i in range(h - 1, -1, -1):
+            x = self.stack[i]
+            self.best[self._v(x)] = self.POS if x > 0 else 1 - self.POS
+
+    def _rephase(self):
+        """Kissat rephasing without walks: best, original, best, inverted, ..."""
+        k = self.rephase_k & 3
+        self.rephase_k += 1
+        for v in range(self.N):
+            self.meta[v].phase = (self.best[v] if k in (0, 2)
+                                  else 1 - self.POS if k == 1 else self.POS)
+        self.best_height = 0
+        self.rephase_at = self.stats.backtrack + self.REPHASE
+        self.stats.rephase += 1
 
     # ----------------------------------------------------------------- pq --
     def pq_swap_lower(self, x, p, rem):
@@ -380,13 +433,21 @@ class Golden:
                     limit_count = 0
                     limit = self.RESET_MULT * self._luby()
                     reset_all = True
+                elif self._low_memory():
+                    reset_all = True
+                    s.reduce += 1
+                if reset_all:
                     s.reset += 1
+                if self.REPHASE and level > 0:
+                    self._save_best(self.stack_end[level - 1])
                 err, level, ins0, ins1, given = self.learn(level, reset_all)
                 if err < 0:
                     return err
                 if reset_all:
                     level = 0
                     self._prune()
+                    if self.REPHASE and s.backtrack >= self.rephase_at:
+                        self._rephase()
                 do_bt = False
                 if level == 0:
                     if ins0 != 0:
@@ -497,6 +558,7 @@ class Golden:
             rh, res_pos = 0, 0
             poss = rc[num_el - 1] if num_el > 0 else 0
             once = highest_il != 0
+            self.used[next_c - 1] = True
             for x in self._clause(next_c - 1):
                 s.learn_merge += 1
                 v = self._v(x)
@@ -610,6 +672,10 @@ class Golden:
         self._undo(self.height - target)
         did_simplify = False
         if not found_abs:
+            # MiniSat abstractLevel: one bit per (decision level mod 32) in the clause
+            self.abs_mask = 0
+            for x in rc:
+                self.abs_mask |= 1 << (self.meta[self._v(x)].dec_lvl & 31)
             extra, did_simplify = self._minimize(to_min)
             non_rem += extra
 
@@ -685,6 +751,11 @@ class Golden:
                                 queue.append(u + 1)
                                 if cmm.decide:
                                     hit = True
+                                elif self.MIN_ABS and not (
+                                        self.abs_mask >> (self.meta[u].dec_lvl & 31)) & 1:
+                                    hit = True      # its level's decision is not in the clause
+                    if hit and self.MIN_ABS:
+                        break                       # the walk can stop at the first failure
                 if not hit and cm == num_e:
                     mm.min_keep = 2
                     did = True
@@ -703,6 +774,7 @@ class Golden:
         addr = self.free_cls_pages.read()
         cid = self.free_cls_id.read()
         self.last_inserted = cid
+        self.used[cid] = False
         self.cmd[cid] = (addr, non_rem)
         comp = 0
         udl: list[int] = []
@@ -762,15 +834,24 @@ class Golden:
     # -------------------------------------------------------------- prune --
     def _prune(self):
         remove_total = (self.used_total * self.PRUNE) >> 16
-        self.used_total -= remove_total
         ids: list[int] = []
         b = D.LBD_BUCKETS - 1
-        while len(ids) < remove_total and b >= 0:
+        left = len(self.buckets[b])           # each clause is looked at once per prune
+        while len(ids) < remove_total and b >= self.GLUE:
             q = self.buckets[b]
-            if not q or q[0] == self.last_inserted:
+            if not q or q[0] == self.last_inserted or left == 0:
                 b -= 1
+                left = len(self.buckets[b])
                 continue
-            ids.append(q.pop(0))
+            c = q.pop(0)
+            left -= 1
+            if self.USED and self.used[c]:
+                self.used[c] = False          # Kissat: used clauses survive one reduction
+                q.append(c)
+                continue
+            ids.append(c)
+        # the HLS subtracts the target even when fewer clauses were found
+        self.used_total -= len(ids) if self.GLUE or self.USED else remove_total
         for r in ids:
             self._delete_clause(r)
         self.stats.deleted += len(ids)

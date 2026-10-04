@@ -20,7 +20,7 @@ from .host import D
 
 COMPARED = ["total", "decide", "retry", "backtrack", "reset", "learn_iter",
             "learn_merge", "min_iter", "min_merge", "simplified", "check_cnt",
-            "deleted", "longest"]
+            "deleted", "longest", "reduce", "rephase"]
 
 
 def simulate(img, max_cycles: int = 50_000_000, poll_every: int = 2000,

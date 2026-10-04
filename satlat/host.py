@@ -39,6 +39,23 @@ class Config:
     positive_phase: bool = False  # _HOST_POSITIVE_LIT_PHASE_VAL
     decay: float = 0.95          # _HOST_DECAY_FACTOR
     prune: float = 0.1           # _HOST_PRUNE_PERCENTAGE
+    # PigWeedSAT heuristics (not in the HLS).  The defaults reproduce the HLS.
+    low_cls_pages: int = 0       # restart + prune when free clause pages drop below this
+    low_lit_pages: int = 0       # ... or free literal pages (0 = off)
+    glue_buckets: int = 0        # prune never takes from the lowest buckets (1: LBD <= 2)
+    used_bit: bool = False       # a clause used in conflict analysis survives one prune
+    min_abstract: bool = False   # minimizer: level filter + stop a walk at its first failure
+    rephase: int = 0             # conflicts between best/original/best/inverted rephases
+
+
+def pigweed(cfg: Config | None = None) -> Config:
+    """`cfg` with the recommended heuristics: memory-pressure reduction, glue
+    clauses kept, used clauses spared once, abstract-level minimization.
+    (Rephasing is left off: on the SATLIB / test-case set it adds nothing once
+    the used bit is on.)"""
+    import dataclasses
+    return dataclasses.replace(cfg or Config(), low_cls_pages=256, low_lit_pages=32,
+                               glue_buckets=1, used_bit=True, min_abstract=True)
 
 
 @dataclass
@@ -123,8 +140,8 @@ def parse_dimacs(path: str) -> tuple[int, list[list[int]]]:
 def build_images(num_vars: int, clauses: list[list[int]], cfg: Config | None = None) -> Images:
     cfg = cfg or Config()
     P = cfg.lit_page
-    if P < 4:
-        raise ValueError("lit_page must be >= 4")
+    if P < 4 or P & (P - 1):
+        raise ValueError("lit_page must be a power of two >= 4")
     if num_vars > D.N_MAX:
         raise Unsupported(f"{num_vars} variables > N_MAX {D.N_MAX}")
     if len(clauses) > D.C_MAX:

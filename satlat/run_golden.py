@@ -22,6 +22,17 @@ def expected(path: str) -> int | None:
     return None
 
 
+def solve_job(job):
+    """(cnf path, Config, iteration limit) -> (result, Stats), or None if it does not
+    fit or hits the limit.  Top-level so process pools can run it."""
+    path, cfg, limit = job
+    try:
+        res, g = G.solve(H.load_cnf(path, cfg), limit)
+    except (H.Unsupported, G.SolverError):
+        return None
+    return res, g.stats
+
+
 def main(argv):
     files = argv or sorted(glob.glob(os.path.join(ROOT, "SAT_test_cases", "*", "*")))
     bad = 0

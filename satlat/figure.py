@@ -1,7 +1,8 @@
 """PigWeedSAT comparison figure: python -m satlat.figure -> build/fig_paper_comparison.{png,pdf}
 
-(a) Table 3 solve times (ECP5 measured, SAT-Accel / SAT-Hard from the papers,
-MiniSat measured), (b) Table 2 block-RAM by module, (c) platform specs + cost.
+(a) Table 3 solve times (ECP5 measured with and without the PigWeedSAT
+heuristics, SAT-Accel / SAT-Hard from the papers, MiniSat measured), (b) Table 2
+block-RAM by module, (c) platform specs + cost, (d) compute spend.
 """
 
 from __future__ import annotations
@@ -21,11 +22,12 @@ import matplotlib.image as mpimg  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
-from .report import ROOT, TABLE2_BRAM  # noqa: E402
+from .report import ROOT, SOC, TABLE2_BRAM  # noqa: E402
 
 SURFACE = "#fcfcfb"
 INK, INK2, MUTED, GRID = "#0b0b0b", "#52514e", "#8a8984", "#e6e5e1"
 C_ECP5, C_SA, C_SH, C_MS = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"   # slots 1-4 (validated, adjacent)
+C_PW = "#e87ba4"     # slot 5; drawn above C_ECP5 (validated in that order: PW, ECP5, SA, SH, MS)
 LOGO = os.path.join(ROOT, "Assets", "logo.jpg")
 
 # Platform reference (c).  Prices: mean of single-unit US list prices, Oct 2026.
@@ -66,6 +68,7 @@ MILESTONES = [   # git commit subject prefix -> label
     ("PQ command FIFO", "PQ FIFO +\nbacktrack ∥ min"),
     ("Timing:", "timing\n(72 MHz Fmax)"),
     ("65 MHz", "65 MHz on\nhardware"),
+    ("Heuristics", "Kissat/MiniSat\nheuristics"),
 ]
 
 
@@ -139,8 +142,13 @@ def _ms(r):
 def main():
     rows = json.load(open(os.path.join(ROOT, "build", "table3_hw.json")))
     mini = json.load(open(os.path.join(ROOT, "build", "minisat_table3.json")))
+    pw_path = os.path.join(ROOT, "build", "table3_hw_pigweed.json")
+    pw = {r["name"]: r for r in json.load(open(pw_path))} if os.path.exists(pw_path) else {}
     for r in rows:
         r["ms_ms"] = mini["results"][r["name"]]["ms"]
+        q = pw.get(r["name"], {})
+        r["pw_ms"] = q.get("ms") if q.get("status") == "ok" else None
+        r["pw_status"] = q.get("status")
     clk_mhz = next((r["clk_hz"] / 1e6 for r in rows if "clk_hz" in r), 50.0)
     plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 9,
                          "axes.edgecolor": MUTED, "axes.labelcolor": INK2,
@@ -167,26 +175,34 @@ def main():
 
     # ---------------------------------------------------------- (a) Table 3
     ax = fig.add_subplot(gs[0, 0])
-    series = [(f"PigWeedSAT — ECP5-85F @ {clk_mhz:g} MHz (measured)", C_ECP5, "ecp5"),
+    series = ([(f"PigWeedSAT + heuristics — same board (measured)", C_PW, "pw_ms")] if pw else []) + [
+              (f"PigWeedSAT — ECP5-85F @ {clk_mhz:g} MHz (measured)", C_ECP5, "ecp5"),
               ("SAT-Accel — U55C @ 230 MHz (paper)", C_SA, "sa_ms"),
               ("SAT-Hard — ZedBoard (paper)", C_SH, "sh_ms"),
               (f"MiniSat 2.2 — {mini['cpu']} (measured)", C_MS, "ms_ms")]
-    h = 0.21
+    h = 0.84 / len(series)
     for i, r in enumerate(rows):
         y = len(rows) - 1 - i
         for j, (_, color, key) in enumerate(series):
             val = (_ms(r) if r.get("status") == "ok" else None) if key == "ecp5" else r[key]
-            yy = y + (1.5 - j) * h
+            yy = y + ((len(series) - 1) / 2 - j) * h
             if val is None:
-                note = ("PigWeedSAT: " + ("does not fit on-chip" if r.get("status") == "does not fit"
-                                          else "out of clause memory")) if key == "ecp5" \
-                    else "SAT-Accel: N/A (out of memory)"
+                status = r.get("pw_status") if key == "pw_ms" else r.get("status")
+                why = "does not fit on-chip" if status == "does not fit" else "out of clause memory"
+                same = pw and r.get("pw_status") == r.get("status")
+                if key == "pw_ms" and same:
+                    continue                   # one note covers both PigWeedSAT rows
+                if key == "ecp5" and same:
+                    yy += h / 2
+                note = {"ecp5": f"PigWeedSAT{' (± heuristics)' if same else ''}: {why}",
+                        "pw_ms": f"+ heuristics: {why}"}.get(key, "SAT-Accel: N/A (out of memory)")
                 ax.text(0.06, yy, note, va="center", ha="left", fontsize=6.8, color=MUTED,
                         style="italic")
                 continue
             ax.barh(yy, val, height=h - 0.04, left=0.05, color=color, edgecolor=SURFACE,
                     linewidth=1.2, zorder=3)
-            ax.text((val + 0.05) * 1.1, yy, _fmt(val), va="center", ha="left", fontsize=7, color=INK2)
+            ax.text((val + 0.05) * 1.1, yy, _fmt(val), va="center", ha="left",
+                    fontsize=7 if len(series) < 5 else 6.4, color=INK2)
     ax.set_xscale("log")
     ax.set_xlim(0.05, 2e5)
     ax.set_yticks(range(len(rows)))
@@ -200,15 +216,19 @@ def main():
     ax.tick_params(axis="y", length=0)
     ax.set_facecolor(SURFACE)
     ax.legend(handles=[Patch(color=c, label=l) for l, c, _ in series], loc="upper center",
-              bbox_to_anchor=(0.45, 1.075), ncol=2, frameon=False, fontsize=8, labelcolor=INK)
+              bbox_to_anchor=(0.45, 1.075 + 0.015 * (len(series) > 4)), ncol=2, frameon=False,
+              fontsize=8, labelcolor=INK)
     ax.set_title("(a) Table 3 — SATLIB instances used by SAT-Hard", loc="left",
-                 fontsize=11, color=INK, fontweight="bold", pad=44)
+                 fontsize=11, color=INK, fontweight="bold", pad=44 + 10 * (len(series) > 4))
 
     ok = [r for r in rows if r.get("status") == "ok"]
     gm = lambda xs: math.exp(sum(math.log(x) for x in xs) / len(xs))  # noqa: E731
     gm_sh = gm([r["sh_ms"] / _ms(r) for r in ok])
     gm_ms = gm([_ms(r) / r["ms_ms"] for r in ok])
     gm_sa = gm([_ms(r) / r["sa_ms"] for r in ok])
+    both = [r for r in ok if r["pw_ms"]]
+    gm_pw = gm([_ms(r) / r["pw_ms"] for r in both]) if both else None
+    newly = [r["name"] for r in rows if r["pw_ms"] and r.get("status") != "ok"]
 
     # ---------------------------------------------------------- (b) Table 2
     bx = fig.add_subplot(gs[0, 1])
@@ -230,7 +250,8 @@ def main():
     bx.set_xlim(0, max(counts) * 1.2)
     bx.set_title("(b) Table 2 — block RAM by module", loc="left", fontsize=11,
                  color=INK, fontweight="bold", pad=44)
-    bx.text(0, 1.03, "solver 123 / 208 DP16KD · full SoC 147\nSAT-Accel (U55C): 419 BRAM + 778 URAM",
+    bx.text(0, 1.03, f"solver {sum(counts)} / 208 DP16KD · full SoC {SOC['BRAM']}\n"
+            "SAT-Accel (U55C): 419 BRAM + 778 URAM",
             transform=bx.transAxes, fontsize=7.5, color=INK2)
 
     # ---------------------------------------------------------- (c) platforms
@@ -266,6 +287,8 @@ def main():
            f"host load excluded; all {len(ok)} solved answers correct and SAT models re-verified.  "
            f"Geometric mean over those {len(ok)}: {gm_sh:.0f}× faster than SAT-Hard, "
            f"{gm_sa:.1f}× slower than SAT-Accel, {gm_ms:.1f}× slower than MiniSat on the M4 Pro.  "
+           + (f"With the heuristics (host.pigweed(), same bitstream): {gm_pw:.2f}× faster over those "
+              f"{len(both)} and {', '.join(newly)} newly solved.  " if gm_pw else "") +
            "SAT-Accel and SAT-Hard times from Lo et al., FPGA ’25, Table 3; SAT-Hard platform from "
            "Ustaoglu et al., DSD ’19 (clock not reported, n/r).  MiniSat 2.2: default options, median CPU time of 11 runs "
            "(includes parsing; ~1 ms floor).  Board cost: mean of single-unit US list prices "

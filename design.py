@@ -23,6 +23,11 @@ top level (solver.cpp) over shared block RAM:
 The exact operation order is specified by satlat/golden.py; simulation is
 checked against it counter for counter.
 
+Heuristics not in the HLS (registers 24..28, all 0 = the HLS algorithm):
+memory-pressure restarts (SATAccel RST), glue / used-clause protection
+(Pruner), abstract-level minimization (Learner mask, Minimizer filter), best
+phases and rephasing (Backtracker BEST, SATAccel RPH).
+
 Host protocol (32-bit word registers; byte address = 4 * word):
   load config registers and memory images through MEM_SEL/MEM_PTR/MEM_DATA,
   write CTRL.start, poll CTRL until done, read RESULT and the answer stack.
@@ -75,7 +80,7 @@ RESCALE_EXP = 100     # rescale by 2^-100 once a score reaches 2^100  [1e100]
 SCORE_ONE = EXP_BIAS << FRAC_W
 
 MAGIC = 0x5A7ACCE1
-VERSION = 1
+VERSION = 2           # 2: PigWeedSAT heuristics (registers 24..28)
 
 # Wishbone register map (word addresses).
 R_CTRL, R_RESULT = 0, 1
@@ -84,13 +89,16 @@ R_POSPHASE, R_LITPAGE, R_RESETMULT, R_PRUNE, R_INVDECAY = 7, 8, 9, 10, 11
 R_MEMSEL, R_MEMPTR, R_MEMDATA = 12, 13, 14
 R_MEMWIN = 256       # words 256..511 all alias MEM_DATA, so incrementing bursts stream it
 R_CAPS = 16           # 16.. N_MAX, C_MAX, LE_MAX, CE_MAX, MAX_LEARN, FRAC_W, MAGIC, VERSION
+# Heuristics beyond the HLS (all 0 = the HLS algorithm; see satlat/host.py Config).
+R_LOWCP, R_LOWLP, R_GLUE, R_HFLAGS, R_REPHASE = 24, 25, 26, 27, 28
+HF_USED, HF_MINABS = 0, 1   # R_HFLAGS bit positions
 R_STATS = 32          # see STAT_NAMES
 R_CYCLES = 64         # 64 + 2k (lo), 65 + 2k (hi): HLS cycleCounter[k]
 STAT_NAMES = [
     "total", "decide", "retry", "backtrack", "reset", "height",
     "learn_iter", "learn_merge", "min_iter", "min_merge", "simplified",
     "longest", "longest_simplified", "check_cnt", "deleted", "level",
-    "fixed", "state", "cycles_lo", "cycles_hi",
+    "fixed", "state", "cycles_lo", "cycles_hi", "reduce", "rephase",
 ]
 N_PHASES = 9          # COPY, PQ-FIND, BRANCH, LEARN, LEARN_MIN, SAVE, RESIZE, BACKTRACK, DELETE
 PH_INIT, PH_FIND, PH_BCP, PH_LEARN, PH_MIN, PH_SAVE, PH_DELETE = 0, 1, 2, 3, 4, 5, 8
@@ -258,6 +266,9 @@ class Memories:
         ("rc", signed(LIT_W), 2 * MAX_LEARN),     # resolution clause
         ("tomin", signed(LIT_W), MAX_LEARN),      # to-minimize list / pq scan list
         ("mq", unsigned(VAR_W), MAX_LEARN),       # minimize queue
+        ("used", unsigned(1), C_MAX),             # clause used in conflict analysis
+        ("best", unsigned(1), N_MAX),             # best (longest conflict-free trail) phases
+        ("dl5", unsigned(5), N_MAX),              # implied literal's decision level mod 32
     ]
 
     def __init__(self):
@@ -482,7 +493,7 @@ class FreeList(_Service):
     """mmuStream: bump-allocate `start, start+inc, ...` below `limit`, then a ring
     of returned addresses.  Clients: push(v) and pop() -> `val` with `ack`."""
 
-    def __init__(self, name, addr_w, ring_depth, limit, inc):
+    def __init__(self, name, addr_w, ring_depth, limit, inc, inc_log2):
         super().__init__()
         self.name = name
         self.ring = _RAM(f"{name}_ring", unsigned(addr_w), ring_depth)
@@ -490,6 +501,7 @@ class FreeList(_Service):
         self.addr_w = addr_w
         self.limit = limit
         self.inc = inc
+        self.inc_log2 = inc_log2
         iw = (ring_depth - 1).bit_length()
         self.reset = Signal(name=f"{name}_reset")
         self.start = Signal(addr_w + 1, name=f"{name}_start")
@@ -501,7 +513,7 @@ class FreeList(_Service):
         self.ack = Signal(name=f"{name}_ack")
         self.bump_ok = Signal(name=f"{name}_bump_ok")
         self.empty = Signal(name=f"{name}_empty")
-        self.pages_left = Signal(addr_w + 2, name=f"{name}_pages_left")   # for 4-word pages
+        self.pages_left = Signal(addr_w + 2, name=f"{name}_pages_left")   # golden size()
 
     def client(self, owner):
         return self._new_client(f"{owner}_{self.name}",
@@ -517,7 +529,8 @@ class FreeList(_Service):
         # clients check space long after the last push, so they never see a stale value.
         m.d.sync += [self.bump_ok.eq(self.nxt + self.inc <= self.limit),
                      self.empty.eq(~(self.nxt + self.inc <= self.limit) & (self.cnt == 0)),
-                     self.pages_left.eq(((self.limit - self.nxt) >> 2)[:self.addr_w + 1] + self.cnt)]
+                     self.pages_left.eq(((self.limit - self.nxt)[:self.addr_w + 2] >> self.inc_log2)
+                                        + self.cnt)]
         ring_pop = Signal()
         with m.If(push):
             self._rp.write(m, self.tail, push_v)
@@ -568,7 +581,7 @@ class LbdBuckets(_Service):
 
     def client(self, owner):
         return self._new_client(f"{owner}_bk", [
-            ("append", 1), ("append_b", 4), ("append_id", CLS_W),
+            ("append", 1), ("append_b", 4), ("append_id", CLS_W), ("requeue", 1),
             ("pop_req", 1), ("pop_commit", 1), ("sub_used", 1), ("sub_n", CLS_W + 1)])
 
     def elaborate(self, platform):
@@ -576,6 +589,7 @@ class LbdBuckets(_Service):
         self.next.attach(m)
         g = self._merged
         append, b, cid = g("append", 1), g("append_b", 4), g("append_id", CLS_W)
+        requeue = g("requeue", 1)            # a used clause back to its bucket's tail
         pop_req, pop_commit = g("pop_req", 1), g("pop_commit", 1)
         sub_used, sub_n = g("sub_used", 1), g("sub_n", CLS_W + 1)
         m.d.comb += [self.q_head.eq(self.head[self.q]), self.q_cnt.eq(self.cnt[self.q]),
@@ -585,12 +599,13 @@ class LbdBuckets(_Service):
                 m.d.sync += self.head[b].eq(cid)
             with m.Else():
                 self._np.write(m, self.tail[b], cid)
-            m.d.sync += [self.tail[b].eq(cid), self.cnt[b].eq(self.cnt[b] + 1),
-                         self.used_total.eq(self.used_total + 1)]
-            with m.Switch(b):
-                for k in range(LBD_BUCKETS):
-                    with m.Case(k):
-                        m.d.sync += self.lbd_hist[k].eq(self.lbd_hist[k] + 1)
+            m.d.sync += [self.tail[b].eq(cid), self.cnt[b].eq(self.cnt[b] + 1)]
+            with m.If(~requeue):
+                m.d.sync += self.used_total.eq(self.used_total + 1)
+                with m.Switch(b):
+                    for k in range(LBD_BUCKETS):
+                        with m.Case(k):
+                            m.d.sync += self.lbd_hist[k].eq(self.lbd_hist[k] + 1)
         with m.If(pop_req):
             self._np.read(m, self.head[self.q])
         with m.If(pop_commit):
@@ -936,7 +951,8 @@ class Propagator(_Engine):
     def __init__(self, mems, cfg):
         super().__init__()
         self.cfg = cfg
-        self.p = _Ports(mems, "bcp", "stk", "meta", "lmmd", "ubc", "occ", "ls", "cst", "cmd")
+        self.p = _Ports(mems, "bcp", "stk", "meta", "lmmd", "ubc", "occ", "ls", "cst", "cmd",
+                        "dl5")
         self.pipe = _OccPipe(self.p, cfg.P, "bcp")
         # inputs (sampled at start)
         self.i_height = Signal(LVL_W)
@@ -1005,6 +1021,7 @@ class Propagator(_Engine):
                     p.meta.write(m, v, pack(L_META, ins=height, dec=level, stk=1, phase=mr.phase,
                                             ubl=bL, short=p.cmd.rdata.num))
                     p.ubc.write(m, v, u_c1)
+                    p.dl5.write(m, v, level[:5])
                     p.stk.write(m, height, u_lit)
                     p.lmmd.read(m, v)
                     m.d.sync += height.eq(height + 1)
@@ -1084,6 +1101,7 @@ class Propagator(_Engine):
                 p.lmmd.write(m, v, pack(L_LMMD, keep=p.lmmd.rdata.keep, decide=0,
                                         fix=p.lmmd.rdata.fix))
                 p.ubc.write(m, v, self.given + 1)
+                p.dl5.write(m, v, level[:5])
                 p.stk.write(m, height, flipped)
                 m.d.sync += height.eq(height + 1)
                 m.next = "Q"
@@ -1121,7 +1139,7 @@ class Learner(_Engine):
         super().__init__()
         self.cfg = cfg
         self.p = _Ports(mems, "ln", "cmd", "cs", "scr", "val", "meta", "lmmd", "rc", "stk",
-                        "ubc", "tomin", "send")
+                        "ubc", "tomin", "send", "used")
         self.cw = _ClauseWalk(self.p, "ln")
         self.pq = pq.client("ln")
         self.pq_ready = pq.ready
@@ -1141,6 +1159,7 @@ class Learner(_Engine):
         self.non_rem = Signal(CNT_W)
         self.tomin_n = Signal(LRN_W)
         self.bt_target = Signal(LVL_W)
+        self.abs_mask = Signal(32)       # MiniSat abstractLevel of the clause
 
     def elaborate(self, platform):  # noqa: C901
         m = Module()
@@ -1206,6 +1225,7 @@ class Learner(_Engine):
                     m.next = "DECAY"
                 with m.Else():
                     self._stat(m, "learn_iter")
+                    p.used.write(m, next_c - 1, 1)
                     m.d.sync += [rh.eq(0), res_pos.eq(0), once.eq(highest != 0),
                                  cw.c.eq(next_c - 1), poss.eq(0)]
                     with m.If(num_el > 0):
@@ -1338,7 +1358,7 @@ class Learner(_Engine):
                 with m.If(vc_i == ((self.cfg.n_vars + 31) >> 5)):
                     m.d.sync += [bl_i.eq(0), level_before.eq(-1), self.uip.eq(0),
                                  self.ins0.eq(0), non_rem.eq(0), tomin_n.eq(0),
-                                 mode_a.eq(~self.reset_all & ~found_abs)]
+                                 mode_a.eq(~self.reset_all & ~found_abs), self.abs_mask.eq(0)]
                     m.next = "BL_RD"
                 with m.Else():
                     p.val.write(m, vc_i, 0)
@@ -1357,6 +1377,7 @@ class Learner(_Engine):
                 m.next = "BL_C"
             with m.State("BL_C"):
                 mr, lr = p.meta.rdata, p.lmmd.rdata
+                m.d.sync += self.abs_mask.eq(self.abs_mask | (C(1, 32) << mr.dec[:5])[:32])
                 with m.If(found_abs):
                     with m.If(~lr.fix):
                         m.d.sync += self.ins0.eq(bl_x)
@@ -1383,18 +1404,23 @@ class Learner(_Engine):
 class Backtracker(_Engine):
     """backtrack.cpp undoStates + updateStatesBackward: pop `count` trail
     literals, re-increment their clause states (walked ones only, via the
-    pipelined _OccPipe), unhide them in the VSIDS heap and save their phase."""
+    pipelined _OccPipe), unhide them in the VSIDS heap and save their phase.
+
+    With `best_go`, it then copies the phases of stack[0:best_n] -- the longest
+    conflict-free trail so far -- into the best-phase RAM (Kissat best phases)."""
 
     def __init__(self, mems, cfg, pq):
         super().__init__()
         self.cfg = cfg
-        self.p = _Ports(mems, "bt", "stk", "occ", "ls", "cst", "meta")
+        self.p = _Ports(mems, "bt", "stk", "occ", "ls", "cst", "meta", "best")
         self.pipe = _OccPipe(self.p, cfg.P, "bt")
         self.pq = pq.client("bt")
         self.pq_ready = pq.ready
         self.i_height = Signal(LVL_W)
         self.count = Signal(LVL_W)
         self.commit = Signal(signed(LVL_W + 1))
+        self.best_go = Signal()
+        self.best_n = Signal(LVL_W)
         self.height = Signal(LVL_W)
 
     def elaborate(self, platform):
@@ -1402,6 +1428,9 @@ class Backtracker(_Engine):
         p, pipe, cfg = self.p, self.pipe, self.cfg
         height = self.height
         left = Signal(LVL_W)
+        best_go = Signal()
+        bi = Signal(LVL_W)
+        bv = Signal()
         bL = Signal(signed(LIT_W))
         ud_v = Signal(VAR_W)
         ud_e = Signal(VAR_W + 1)
@@ -1415,14 +1444,28 @@ class Backtracker(_Engine):
         with m.FSM():
             with m.State("IDLE"):
                 with m.If(self.start):
-                    m.d.sync += [height.eq(self.i_height), left.eq(self.count)]
+                    m.d.sync += [height.eq(self.i_height), left.eq(self.count),
+                                 best_go.eq(self.best_go), bi.eq(self.best_n), bv.eq(0)]
                     m.next = "TOP"
             with m.State("FIN"):
                 m.d.comb += self.done.eq(1)
                 m.next = "IDLE"
+            with m.State("BEST"):                    # stack[bi-1] .. stack[0] -> best
+                with m.If(bv):
+                    x = p.stk.rdata
+                    p.best.write(m, var_of(x), Mux(x > 0, cfg.pos_phase, ~cfg.pos_phase))
+                with m.If(bi == 0):
+                    m.d.sync += bv.eq(0)
+                    with m.If(~bv):
+                        m.next = "FIN"
+                with m.Else():
+                    p.stk.read(m, bi - 1)
+                    m.d.sync += [bi.eq(bi - 1), bv.eq(1)]
             with m.State("TOP"):
                 with m.If(left == 0):
                     m.next = "FIN"
+                    with m.If(best_go):
+                        m.next = "BEST"
                 with m.Else():
                     p.stk.read(m, height - 1)
                     m.d.sync += [height.eq(height - 1), left.eq(left - 1)]
@@ -1465,9 +1508,11 @@ class Minimizer(_Engine):
     def __init__(self, mems, cfg):
         super().__init__()
         self.cfg = cfg
-        self.p = _Ports(mems, "mn", "tomin", "lmmd", "ubc", "cmd", "cs", "scm", "vam", "mq")
+        self.p = _Ports(mems, "mn", "tomin", "lmmd", "ubc", "cmd", "cs", "scm", "vam", "mq",
+                        "dl5")
         self.cw = _ClauseWalk(self.p, "mn")
         self.n = Signal(LRN_W)           # input: entries in tomin
+        self.abs_mask = Signal(32)       # input: the clause's abstract levels
         self.extra = Signal(CNT_W)       # output: non-removable literals found
         self.did = Signal()              # output: something was removed
 
@@ -1523,6 +1568,7 @@ class Minimizer(_Engine):
                 p.scm.read(m, u)
                 p.vam.read(m, u >> 5)
                 p.lmmd.read(m, u)
+                p.dl5.read(m, u)
                 self._stat(m, "min_merge")
                 m.next = "MM_B"
             with m.State("MM_B"):                    # ... + part_2
@@ -1535,6 +1581,11 @@ class Minimizer(_Engine):
                 st1 = (st0 | bit)[:2]
                 lr = p.lmmd.rdata
                 cmp_ = (lr.keep > 0) | lr.fix
+                # a literal whose level has no literal in the clause cannot be removed
+                # through: its chain ends at that level's decision (MiniSat abstractLevel)
+                minabs = self.cfg.hflags[HF_MINABS]
+                reject = lr.decide | (minabs & ~self.abs_mask.bit_select(p.dl5.rdata, 1))
+                stop = Signal()
                 with m.If(st1 == 3):
                     m.d.sync += num_e.eq(num_e - 1)
                 with m.Elif(ins):
@@ -1546,9 +1597,12 @@ class Minimizer(_Engine):
                         with m.Else():
                             p.mq.write(m, mq_h, u)
                             m.d.sync += mq_h.eq(mq_h + 1)
-                            with m.If(lr.decide):
+                            with m.If(reject):
                                 m.d.sync += hit.eq(1)
+                                m.d.comb += stop.eq(minabs)
                 m.next = "MM_CWN"
+                with m.If(stop):                     # the walk can end at its first failure
+                    m.next = "MM_END"
             with m.State("MM_END"):
                 with m.If(~hit & (cmk == num_e)):
                     p.lmmd.write(m, g_v, pack(L_LMMD, keep=2, decide=g_mm.decide, fix=g_mm.fix))
@@ -1587,7 +1641,7 @@ class ClauseSaver(_Engine):
         super().__init__()
         self.cfg = cfg
         self.p = _Ports(mems, "sv", "rc", "meta", "lmmd", "occ", "ls", "cs", "cmd", "c2l",
-                        "l2c", "cst")
+                        "l2c", "cst", "used")
         self.fcp, self.fid, self.flp, self.bk = fcp, fid, flp, buckets
         self.c_fcp = fcp.client("sv")
         self.c_fid = fid.client("sv")
@@ -1649,6 +1703,7 @@ class ClauseSaver(_Engine):
                     m.d.sync += [cid.eq(fid.val), comp.eq(0), udl_n.eq(0), sub.eq(0),
                                  kept.eq(0), i.eq(0)]
                     p.cmd.write(m, fid.val, pack(L_CMD, start=addr, num=non_rem))
+                    p.used.write(m, fid.val, 0)
                     m.next = "RD"
             with m.State("RD"):
                 with m.If(i == self.num_el):
@@ -1751,14 +1806,18 @@ class ClauseSaver(_Engine):
 class Pruner(_Engine):
     """clause_store_handler DELETE (getDeletedClsID, deleteClauses) + manage.cpp
     deleteTransposedClauses + location_handler SEND/UPDATE: on a restart, delete
-    the prune fraction of learned clauses, highest LBD bucket and oldest first."""
+    the prune fraction of learned clauses, highest LBD bucket and oldest first.
+
+    Heuristics: buckets below cfg.glue are never touched (Glucose keeps glue
+    clauses), and with HF_USED a clause used in conflict analysis since the last
+    prune goes back to its bucket's tail once (Kissat's `used` flag)."""
 
     STATS = ("deleted",)
 
     def __init__(self, mems, cfg, fcp, fid, flp, buckets):
         super().__init__()
         self.cfg = cfg
-        self.p = _Ports(mems, "pr", "cmd", "cs", "c2l", "occ", "ls", "l2c")
+        self.p = _Ports(mems, "pr", "cmd", "cs", "c2l", "occ", "ls", "l2c", "used")
         self.cw = _ClauseWalk(self.p, "pr")
         self.bk = buckets
         self.c_fcp = fcp.client("pr")
@@ -1784,29 +1843,49 @@ class Pruner(_Engine):
         ca = Signal(CA_W)
         o_start = Signal(LA_W)
         o_num = Signal(LA_W + 1)
+        left = Signal(CLS_W + 1)             # clauses of bucket pb not yet looked at
+        fresh = Signal()                     # pb just changed: load `left`
+        used_en = self.cfg.hflags[HF_USED]
+        hls = (self.cfg.glue == 0) & ~used_en
         m.d.comb += bk.q.eq(pb[:4])
 
         with m.FSM():
             with m.State("IDLE"):
                 with m.If(self.start):
                     rt = ((bk.used_total * self.cfg.prune_q16) >> 16)[:CLS_W + 1]
-                    m.d.sync += [remove_total.eq(rt), pb.eq(LBD_BUCKETS - 1), removed.eq(0)]
-                    m.d.comb += [self.c_bk.sub_used.eq(1), self.c_bk.sub_n.eq(rt)]
+                    m.d.sync += [remove_total.eq(rt), pb.eq(LBD_BUCKETS - 1), removed.eq(0),
+                                 fresh.eq(1)]
+                    # the HLS subtracts the target even when fewer clauses are found
+                    m.d.comb += [self.c_bk.sub_used.eq(hls), self.c_bk.sub_n.eq(rt)]
                     m.next = "SEL"
             with m.State("FIN"):
                 m.d.comb += self.done.eq(1)
                 m.next = "IDLE"
             with m.State("SEL"):                     # getDeletedClsID
-                with m.If((removed == remove_total) | (pb < 0)):
+                with m.If(fresh):
+                    m.d.sync += [left.eq(bk.q_cnt), fresh.eq(0)]
+                with m.Elif((removed == remove_total) | (pb < 0) | (pb[:4] < self.cfg.glue)):
+                    m.d.comb += [self.c_bk.sub_used.eq(~hls), self.c_bk.sub_n.eq(removed)]
                     m.next = "FIN"
-                with m.Elif((bk.q_cnt == 0) | (bk.q_head == self.last_ins)):
-                    m.d.sync += pb.eq(pb - 1)
+                with m.Elif((bk.q_cnt == 0) | (bk.q_head == self.last_ins) | (left == 0)):
+                    m.d.sync += [pb.eq(pb - 1), fresh.eq(1)]
                 with m.Else():
-                    m.d.sync += d_r.eq(bk.q_head)
+                    m.d.sync += [d_r.eq(bk.q_head), left.eq(left - 1)]
                     m.d.comb += self.c_bk.pop_req.eq(1)
+                    p.used.read(m, bk.q_head)
                     m.next = "POP"
             with m.State("POP"):
                 m.d.comb += self.c_bk.pop_commit.eq(1)
+                with m.If(used_en & p.used.rdata):
+                    p.used.write(m, d_r, 0)
+                    m.next = "REQ"
+                with m.Else():
+                    m.next = "DEL"
+            with m.State("REQ"):                     # used: survive this prune
+                m.d.comb += [self.c_bk.append.eq(1), self.c_bk.append_b.eq(pb[:4]),
+                             self.c_bk.append_id.eq(d_r), self.c_bk.requeue.eq(1)]
+                m.next = "SEL"
+            with m.State("DEL"):
                 m.d.sync += [removed.eq(removed + 1), cw.c.eq(d_r)]
                 self._stat(m, "deleted")
                 m.d.comb += [self.c_fid.push.eq(1), self.c_fid.push_v.eq(d_r)]
@@ -1871,6 +1950,12 @@ class Config:
         self.reset_mult = Signal(32, init=100)
         self.prune_q16 = Signal(17, init=6553)
         self.inv_decay = Signal(SCORE_W, init=0x7F0D79)
+        # heuristics (0 = off)
+        self.low_cp = Signal(16)         # restart + prune below this many free clause pages
+        self.low_lp = Signal(16)         # ... or free literal pages
+        self.glue = Signal(4)            # prune spares LBD buckets below this
+        self.hflags = Signal(2)          # HF_USED | HF_MINABS
+        self.rephase = Signal(32)        # conflicts between rephases
 
 
 class HostInterface(Elaboratable):
@@ -1939,7 +2024,9 @@ class HostInterface(Elaboratable):
                                  (R_FIXED, cfg.fixed_init), (R_LITPAGE, cfg.P),
                                  (R_RESETMULT, cfg.reset_mult), (R_PRUNE, cfg.prune_q16),
                                  (R_INVDECAY, cfg.inv_decay), (R_MEMSEL, mem_sel),
-                                 (R_MEMPTR, mem_ptr)]:
+                                 (R_MEMPTR, mem_ptr),
+                                 (R_LOWCP, cfg.low_cp), (R_LOWLP, cfg.low_lp), (R_GLUE, cfg.glue),
+                                 (R_HFLAGS, cfg.hflags), (R_REPHASE, cfg.rephase)]:
                         with m.Case(a):
                             m.d.sync += s.eq(dw)
                     with m.Case(R_POSPHASE):
@@ -1960,7 +2047,9 @@ class HostInterface(Elaboratable):
                          (R_CLSELEMS, cfg.cls_elems), (R_FIXED, cfg.fixed_init),
                          (R_POSPHASE, cfg.pos_phase), (R_LITPAGE, cfg.P),
                          (R_RESETMULT, cfg.reset_mult), (R_PRUNE, cfg.prune_q16),
-                         (R_INVDECAY, cfg.inv_decay), (R_MEMSEL, mem_sel), (R_MEMPTR, mem_ptr)]:
+                         (R_INVDECAY, cfg.inv_decay), (R_MEMSEL, mem_sel), (R_MEMPTR, mem_ptr),
+                         (R_LOWCP, cfg.low_cp), (R_LOWLP, cfg.low_lp), (R_GLUE, cfg.glue),
+                         (R_HFLAGS, cfg.hflags), (R_REPHASE, cfg.rephase)]:
                 with m.Case(a):
                     m.d.comb += dr.eq(s)
             with m.Case(R_MEMDATA, "1--------"):
@@ -2019,9 +2108,14 @@ class SATAccel(Elaboratable):
 
         # ------------------------------------------------ services --------
         pq = PriorityQueue(cfg.n_vars, cfg.inv_decay)
-        flp = FreeList("free_lit_pages", LA_W, LE_MAX // 4, LE_MAX, cfg.P)
-        fcp = FreeList("free_cls_pages", CA_W, CE_MAX // 4, CE_MAX, CLS_PAGE)
-        fid = FreeList("free_cls_id", CLS_W, C_MAX, C_MAX, 1)
+        p_log2 = Signal(3)                       # lit_page is a power of two (host.py)
+        with m.Switch(cfg.P):
+            for k in range(2, 7):
+                with m.Case(1 << k):
+                    m.d.comb += p_log2.eq(k)
+        flp = FreeList("free_lit_pages", LA_W, LE_MAX // 4, LE_MAX, cfg.P, p_log2)
+        fcp = FreeList("free_cls_pages", CA_W, CE_MAX // 4, CE_MAX, CLS_PAGE, 2)
+        fid = FreeList("free_cls_id", CLS_W, C_MAX, C_MAX, 1, 0)
         bk = LbdBuckets()
         rst = Restart(cfg.reset_mult)
 
@@ -2034,7 +2128,7 @@ class SATAccel(Elaboratable):
         prune = Pruner(mems, cfg, fcp, fid, flp, bk)
         engines = [prop, learn, back, mini, save, prune]
 
-        tp = _Ports(mems, "top", "meta", "lmmd", "val", "vam", "send", "tomin", "stk")
+        tp = _Ports(mems, "top", "meta", "lmmd", "val", "vam", "send", "tomin", "stk", "best")
         tpq = pq.client("top")
 
         # ------------------------------------------------ solver state ----
@@ -2068,7 +2162,16 @@ class SATAccel(Elaboratable):
         cyc = [Signal(64, name=f"cyc{k}") for k in range(N_PHASES)]
         cycles = Signal(64)
         tstat = {n: Signal(32, name=f"stat_{n}") for n in ("total", "decide", "retry",
-                                                          "backtrack", "reset")}
+                                                          "backtrack", "reset", "reduce",
+                                                          "rephase")}
+        best_h = Signal(LVL_W)                   # longest conflict-free trail since rephase
+        best_go = Signal()
+        best_n = Signal(LVL_W)
+        rephase_at = Signal(32)
+        rephase_k = Signal(2)
+        rp_i = Signal(LVL_W + 1)
+        rp_k = Signal(2)
+        low_mem = Signal()
 
         def inc(name):
             m.d.sync += tstat[name].eq(tstat[name] + 1)
@@ -2081,12 +2184,14 @@ class SATAccel(Elaboratable):
             learn.nunsat.eq(prop.nunsat), learn.unsat0.eq(prop.unsat0),
             learn.unsat1.eq(prop.unsat1), learn.level.eq(level), learn.reset_all.eq(reset_all),
             back.i_height.eq(height), back.count.eq(height - learn.bt_target),
-            back.commit.eq(commit),
-            mini.n.eq(learn.tomin_n),
+            back.commit.eq(commit), back.best_go.eq(best_go), back.best_n.eq(best_n),
+            mini.n.eq(learn.tomin_n), mini.abs_mask.eq(learn.abs_mask),
             save.num_el.eq(learn.num_el), save.non_rem.eq(non_rem),
             save.reset_all.eq(reset_all), save.uip.eq(uip), save.did.eq(did),
             prune.last_ins.eq(last_ins),
             flp.start.eq(cfg.lit_elems), fcp.start.eq(cfg.cls_elems), fid.start.eq(cfg.n_cls),
+            low_mem.eq(((cfg.low_cp != 0) & (fcp.pages_left < cfg.low_cp))
+                       | ((cfg.low_lp != 0) & (flp.pages_left < cfg.low_lp))),
         ]
 
         host_status = {"done": done, "result": result, "height": height, "level": level,
@@ -2115,13 +2220,15 @@ class SATAccel(Elaboratable):
                     m.d.sync += [height.eq(0), fixed.eq(cfg.fixed_init),
                                  level.eq(Mux(cfg.fixed_init == 0, 1, 0)),
                                  do_bt.eq(0), use_flipped.eq(0), commit.eq(-1),
-                                 last_ins.eq(C_MAX), *[s.eq(0) for s in tstat.values()]]
+                                 last_ins.eq(C_MAX), *[s.eq(0) for s in tstat.values()],
+                                 best_h.eq(0), rephase_at.eq(cfg.rephase), rephase_k.eq(0)]
                     m.next = "INIT_PQ"
                 with m.Else():
                     tp.lmmd.write(m, init_i, 0)
                     tp.meta.write(m, init_i, pack(L_META, ins=0, dec=0, stk=0,
                                                   phase=~cfg.pos_phase, ubl=0, short=0))
                     tp.send.write(m, init_i, 0)
+                    tp.best.write(m, init_i, ~cfg.pos_phase)
                     with m.If(init_i < N_MAX // 32):
                         tp.val.write(m, init_i, 0)
                         tp.vam.write(m, init_i, 0)
@@ -2213,12 +2320,21 @@ class SATAccel(Elaboratable):
 
             # learnClause: resolution -> undo (backtrack) -> minimize -> save
             with m.State("RST"):
-                m.d.sync += reset_all.eq(rst.fire)
-                with m.If(rst.fire):
+                # Luby restart, or (heuristic) restart + prune because memory runs low
+                m.d.sync += reset_all.eq(rst.fire | low_mem)
+                with m.If(rst.fire | low_mem):
                     inc("reset")
+                with m.If(~rst.fire & low_mem):
+                    inc("reduce")
+                tp.send.read(m, level - 1)
                 m.next = "LEARN"
             with m.State("LEARN"):
                 m.d.comb += learn.start.eq(1)
+                # best phases: is the conflict-free prefix send[level-1] the longest yet?
+                bg = (cfg.rephase != 0) & (level != 0) & (tp.send.rdata > best_h)
+                m.d.sync += [best_go.eq(bg), best_n.eq(tp.send.rdata)]
+                with m.If(bg):
+                    m.d.sync += best_h.eq(tp.send.rdata)
                 m.next = "LEARN_W"
             with m.State("LEARN_W"):
                 with m.If(learn.done):
@@ -2268,7 +2384,30 @@ class SATAccel(Elaboratable):
                     m.next = "POST"
             with m.State("PRUNE_W"):
                 with m.If(prune.done):
+                    with m.If((cfg.rephase != 0) & (tstat["backtrack"] >= rephase_at)):
+                        inc("rephase")
+                        m.d.sync += [rp_i.eq(0), rp_k.eq(rephase_k), rephase_k.eq(rephase_k + 1),
+                                     best_h.eq(0),
+                                     rephase_at.eq(tstat["backtrack"] + cfg.rephase)]
+                        m.next = "RPH"
+                    with m.Else():
+                        m.next = "POST"
+
+            # Kissat rephase (no walks): best, original, best, inverted
+            with m.State("RPH"):
+                with m.If(rp_i == cfg.n_vars):
                     m.next = "POST"
+                with m.Else():
+                    tp.meta.read(m, rp_i)
+                    tp.best.read(m, rp_i)
+                    m.next = "RPH_W"
+            with m.State("RPH_W"):
+                mr = tp.meta.rdata
+                ph = Mux(rp_k[0], Mux(rp_k[1], cfg.pos_phase, ~cfg.pos_phase), tp.best.rdata)
+                tp.meta.write(m, rp_i, pack(L_META, ins=mr.ins, dec=mr.dec, stk=mr.stk,
+                                            phase=ph, ubl=mr.ubl, short=mr.short))
+                m.d.sync += rp_i.eq(rp_i + 1)
+                m.next = "RPH"
 
             # solver.cpp tail: fixed literal / flipped UIP for the next iteration
             with m.State("POST"):

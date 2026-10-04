@@ -2,10 +2,10 @@
 
 | | SAT-Accel (U55C, paper) | This work: solver only (ECP5-85F) | This work: full SoC incl. CPU+Ethernet |
 |---|---|---|---|
-| BRAM | 419 / 2,016 (21%) | 123 / 208 (59.1%) | 147 / 208 (70.7%) |
-| DSP | 48 / 9,024 (1%) | 3 / 156 (1.9%) | 7 / 156 (4.5%) |
-| FF | 324,891 / 2,607,360 (12%) | 3,997 / 83,640 (4.8%) | 6,642 / 83,640 (7.9%) |
-| LUT | 251,283 / 1,303,680 (19%) | 10,224 / 83,640 (12.2%) | 17,551 / 83,640 (21.0%) |
+| BRAM | 419 / 2,016 (21%) | 126 / 208 (60.6%) | 150 / 208 (72.1%) |
+| DSP | 48 / 9,024 (1%) | 2 / 156 (1.3%) | 7 / 156 (4.5%) |
+| FF | 324,891 / 2,607,360 (12%) | 5,072 / 83,640 (6.1%) | 7,746 / 83,640 (9.3%) |
+| LUT | 251,283 / 1,303,680 (19%) | 11,470 / 83,640 (13.7%) | 21,249 / 83,640 (25.4%) |
 | URAM | 778 / 960 (81%) | — (ECP5 has none) | — |
 
 **Block RAM by module** (the ECP5 has no URAM, so the URAM-resident stores move into DP16KD; logic is one shared sequencer, so LUT/FF are not split by module):
@@ -17,11 +17,12 @@
 | Learn | 5 | 4% | 51% | `merge_scratch` 2, `valid_learn` 1, `resolution` 2 |
 | Min/Btrk | 4 | 3% | 1% | `min_scratch` 1, `valid_min` 1, `to_minimize` 1, `min_queue` 1 |
 | Deletion | 6 | 5% | 0% | `bucket_next` 3, `free_cls_id` 3 |
-| Cls Store | 24 | 20% | 9% (+URAM) | `cls_store` 14, `cmd` 6, `free_cls_pages` 4 |
+| Cls Store | 24 | 19% | 9% (+URAM) | `cls_store` 14, `cmd` 6, `free_cls_pages` 4 |
 | Tran. Store | 30 | 24% | 0% (+URAM) | `lit_store` 14, `occ` 12, `free_lit_pages` 4 |
-| Tran<->Cls Position | 28 | 23% | 0% (+URAM) | `lit_to_cls` 14, `cls_to_lit` 14 |
+| Tran<->Cls Position | 28 | 22% | 0% (+URAM) | `lit_to_cls` 14, `cls_to_lit` 14 |
 | Variable state (lmd, trail) | 14 | 11% | — | `meta` 6, `lmmd` 1, `answer_stack` 2, `unit_by_cls` 2, `stack_end` 3 |
-| **Total** | **123** | | | |
+| Heuristics (PigWeedSAT) | 3 | 2% | — | `used` 1, `best` 1, `dl5` 1 |
+| **Total** | **126** | | | |
 
 ### Table 3 — SATLIB instances used by SAT-Hard
 
@@ -31,10 +32,10 @@
 | hole8 | 72 | 297 | N/A — out of clause memory after 572 conflicts | — | 691 | 2,270 | 147.44 | — | — | — |
 | hole9 | 90 | 415 | N/A — out of clause memory after 393 conflicts | — | N/A | 15,290 | 1552.32 | — | — | — |
 | uf100-010 | 100 | 430 | SAT ✓ | 4.800 | 1 | 580 | 1.09 | 121x | 0.21x | 253 / 181 / 1 |
-| uuf100-02 | 100 | 430 | UNSAT ✓ | 17.659 | 4 | 4,940 | 1.93 | 280x | 0.23x | 712 / 568 / 4 |
+| uuf100-02 | 100 | 430 | UNSAT ✓ | 17.661 | 4 | 4,940 | 1.93 | 280x | 0.23x | 712 / 568 / 4 |
 | uf125-01 | 125 | 538 | SAT ✓ | 11.769 | 4 | 1,160 | 1.27 | 99x | 0.34x | 492 / 374 / 2 |
-| uuf125-05 | 125 | 538 | UNSAT ✓ | 41.417 | 7 | 4,900 | 2.82 | 118x | 0.17x | 1366 / 1088 / 6 |
-| uf150-08 | 150 | 645 | SAT ✓ | 52.843 | 1 | 3,920 | 1.20 | 74x | 0.02x | 1477 / 1151 / 6 |
+| uuf125-05 | 125 | 538 | UNSAT ✓ | 41.420 | 7 | 4,900 | 2.82 | 118x | 0.17x | 1366 / 1088 / 6 |
+| uf150-08 | 150 | 645 | SAT ✓ | 52.847 | 1 | 3,920 | 1.20 | 74x | 0.02x | 1477 / 1151 / 6 |
 | CBS_k3_n100_m403_b10_1 | 100 | 403 | SAT ✓ | 6.573 | 2 | 2,340 | 1.06 | 356x | 0.30x | 321 / 238 / 2 |
 | aim-200-3_4-yes1-4 | 200 | 680 | SAT ✓ | 4.273 | 4 | 1,200 | 0.95 | 281x | 0.94x | 436 / 173 / 1 |
 | aim-200-1_6-no-4 | 200 | 320 | UNSAT ✓ | 0.388 | 0.3 | 10 | 0.93 | 26x | 0.77x | 236 / 24 / 0 |
@@ -42,3 +43,22 @@
 | ii32e1 | 222 | 1186 | SAT ✓ | 0.254 | 0.1 | 20 | 2.06 | 79x | 0.39x | 41 / 1 / 0 |
 
 Speedup over SAT-Hard on the 9 solved instances: arithmetic mean 159x, geometric mean 122x (paper's SAT-Accel: avg 800x).  Relative to SAT-Accel on the U55C: geometric mean 0.25x over 9 instances (<1 = slower).
+
+### Heuristics — HLS algorithm vs. `host.pigweed()` (same bitstream)
+
+| Problem | HLS ms | heuristics ms | speedup | conflicts (HLS → heuristics) |
+|---|---|---|---|---|
+| hole7 | out of clause memory | 326.67 | — | 895 → 4,569 |
+| hole8 | out of clause memory | out of clause memory | — | 572 → 3,415,970 |
+| hole9 | out of clause memory | out of clause memory | — | 393 → 5,445,455 |
+| uf100-010 | 4.80 | 4.61 | 1.04x | 181 → 177 |
+| uuf100-02 | 17.66 | 14.45 | 1.22x | 568 → 493 |
+| uf125-01 | 11.77 | 19.08 | 0.62x | 374 → 571 |
+| uuf125-05 | 41.42 | 42.38 | 0.98x | 1,088 → 1,113 |
+| uf150-08 | 52.85 | 13.11 | 4.03x | 1,151 → 367 |
+| CBS_k3_n100_m403_b10_1 | 6.57 | 6.86 | 0.96x | 238 → 252 |
+| aim-200-3_4-yes1-4 | 4.27 | 4.25 | 1.00x | 173 → 173 |
+| aim-200-1_6-no-4 | 0.39 | 0.39 | 1.00x | 24 → 24 |
+| ii32e1 | 0.25 | 0.25 | 1.02x | 1 → 1 |
+
+Geometric-mean speedup over the 9 instances both solve: 1.13x.

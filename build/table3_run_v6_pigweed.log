@@ -1,0 +1,21 @@
+[mrg] building bitstream...
+[mrg] complete...
+✓ ready · pigweedsat_table3 on fpga0 · 878.4s
+landed on fpga0, user clock 65 MHz
+--- pigweed
+                    ok hole7: res=0 golden=0 21,233,778 cycles = 326.674 ms @65MHz  dec=6317 confl=4569 (paper SA 125 ms, SAT-Hard 330 ms)
+  out of clause memory hole8: res=-4 golden=None 20,932,562,818 cycles = 322039.428 ms @65MHz  dec=17819835 confl=3415970 (paper SA 691 ms, SAT-Hard 2270 ms)
+  out of clause memory hole9: res=-4 golden=None 27,252,331,715 cycles = 419266.642 ms @65MHz  dec=24730529 confl=5445455 (paper SA None ms, SAT-Hard 15290 ms)
+                    ok uf100-010: res=1 golden=1 299,705 cycles = 4.611 ms @65MHz  dec=246 confl=177 (paper SA 1 ms, SAT-Hard 580 ms)
+                    ok uuf100-02: res=0 golden=0 939,536 cycles = 14.454 ms @65MHz  dec=606 confl=493 (paper SA 4 ms, SAT-Hard 4940 ms)
+                    ok uf125-01: res=1 golden=1 1,240,421 cycles = 19.083 ms @65MHz  dec=755 confl=571 (paper SA 4 ms, SAT-Hard 1160 ms)
+                    ok uuf125-05: res=0 golden=0 2,754,396 cycles = 42.375 ms @65MHz  dec=1413 confl=1113 (paper SA 7 ms, SAT-Hard 4900 ms)
+                    ok uf150-08: res=1 golden=1 852,209 cycles = 13.111 ms @65MHz  dec=500 confl=367 (paper SA 1 ms, SAT-Hard 3920 ms)
+                    ok CBS_k3_n100_m403_b10_1: res=1 golden=1 445,701 cycles = 6.857 ms @65MHz  dec=330 confl=252 (paper SA 2 ms, SAT-Hard 2340 ms)
+                    ok aim-200-3_4-yes1-4: res=1 golden=1 276,390 cycles = 4.252 ms @65MHz  dec=436 confl=173 (paper SA 4 ms, SAT-Hard 1200 ms)
+                    ok aim-200-1_6-no-4: res=0 golden=0 25,230 cycles = 0.388 ms @65MHz  dec=236 confl=24 (paper SA 0.3 ms, SAT-Hard 10 ms)
+SKIP ii16e2: 7825 clauses > C_MAX 4096
+                    ok ii32e1: res=1 golden=1 16,217 cycles = 0.249 ms @65MHz  dec=41 confl=1 (paper SA 0.1 ms, SAT-Hard 20 ms)
+wrote /Users/christianscaff/Documents/Academics/Columbia/Barnard-PL-Lab/Fall 2026/PigWeedSAT/build/table3_hw_pigweed.json
+Free the board with: mrg reset 0
+EXIT 0

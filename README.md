@@ -53,8 +53,36 @@ clause states, location maps), sized for the ECP5: 2,048 variables, 4,096
 clauses, 16K-word stores (constants at the top of `design.py`).  Deviations from
 the HLS are listed in `satlat/golden.py`.
 
-Resources (full SoC incl. the platform's CPU and Ethernet): 147/208 DP16KD,
-~20K/84K LUT, 7 DSP; user clock 65 MHz (Fmax ≈ 72 MHz).
+Resources (full SoC incl. the platform's CPU and Ethernet): 150/208 DP16KD,
+~21K/84K LUT, 7 DSP; user clock 65 MHz (Fmax ≈ 77 MHz).
+
+## Heuristics
+
+On top of the HLS algorithm, five heuristics from MiniSat, Glucose and Kissat.
+Each is enabled by its own register, so one bitstream runs both the faithful
+HLS algorithm (all off, the default) and PigWeedSAT's
+(`satlat.host.pigweed()`):
+
+| `Config` field | from | what it does | where |
+|---|---|---|---|
+| `low_cls_pages`, `low_lit_pages` | Kissat/Glucose `reduce` | restart + prune whenever free clause or literal pages fall below a watermark, not only on Luby restarts | `SATAccel` RST |
+| `glue_buckets` | Glucose | pruning never deletes clauses with LBD ≤ 2 | `Pruner` |
+| `used_bit` | Kissat | a clause used in conflict analysis since the last prune is requeued once instead of deleted | `Learner`, `Pruner` |
+| `min_abstract` | MiniSat `abstractLevel` | the minimizer rejects literals from levels absent in the clause and stops a walk at its first failure; the learned clauses are unchanged | `Learner`, `Minimizer` |
+| `rephase` | Kissat best phases | saves the phases of the longest conflict-free trail; every N conflicts resets phases to best / original / best / inverted | `Backtracker`, `SATAccel` RPH |
+
+`pigweed()` enables the first four (watermarks 256 / 32 pages). Rephasing is
+implemented but off: in the golden-model sweep it cut conflicts ~10% alone,
+but nothing once the used bit is on.
+
+On the board (`MODES=hls,pigweed mrg run bench_table3.py`, same bitstream,
+`build/table3_hw_pigweed.json`): **hole7 is now solved** (UNSAT, 327 ms,
+4,569 conflicts; the HLS algorithm runs out of clause memory); the nine
+instances both modes solve are 1.13× faster in geometric mean (0.62×–4.0×,
+mostly from different search paths); hole8/9 still run out of memory, after
+3.4M / 5.4M conflicts. The abstract-level filter halves the minimizer's work
+without changing the search, but the minimizer runs alongside the Backtracker,
+which is the slower of the two, so the phase barely shortens.
 
 ## Verification
 
@@ -106,7 +134,8 @@ tallies the Claude Code tokens spent on the project (figure panel d).
 Word registers (byte address = 4 × word): `0` CTRL (W bit0 start / R bit0
 busy, bit1 done), `1` RESULT (1 SAT, 0 UNSAT, <0 HLS error), `2..11` config,
 `12..14` MEM_SEL / MEM_PTR / MEM_DATA, `16..23` capabilities + magic,
-`32..51` statistics, `64..81` per-phase cycle counters. Words 256..511 alias
+`24..28` heuristics (LOW_CP, LOW_LP, GLUE, FLAGS = used | min_abstract << 1,
+REPHASE), `32..53` statistics, `64..81` per-phase cycle counters. Words 256..511 alias
 MEM_DATA so a normal 256-word burst streams a memory.
 
 ## License

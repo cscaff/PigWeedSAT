@@ -20,13 +20,14 @@ TABLE2_BRAM = {
     "Tran<->Cls Position": {"lit_to_cls": 14, "cls_to_lit": 14},
     "Variable state (lmd, trail)": {"meta": 6, "lmmd": 1, "answer_stack": 2,
                                     "unit_by_cls": 2, "stack_end": 3},
+    "Heuristics (PigWeedSAT)": {"used": 1, "best": 1, "dl5": 1},
 }
 # Paper Table 2 (U55C): BRAM share per module.
 PAPER_T2_BRAM_PCT = {"Decision (VSIDS heap)": 2, "Propagation": 35, "Learn": 51, "Min/Btrk": 1,
                      "Deletion": 0, "Cls Store": 9, "Tran. Store": 0, "Tran<->Cls Position": 0}
 ECP5 = {"BRAM": 208, "DSP": 156, "FF": 83640, "LUT": 83640}
-USER = {"BRAM": 123, "DSP": 3, "FF": 3997, "LUT": 8736 + 1488}       # synth, design only
-SOC = {"BRAM": 147, "DSP": 7, "FF": 6642, "LUT": 17551}              # full-SoC PnR
+USER = {"BRAM": 126, "DSP": 2, "FF": 5072, "LUT": 11470}             # synth_ecp5, design only (LUT4)
+SOC = {"BRAM": 150, "DSP": 7, "FF": 7746, "LUT": 21249}              # full-SoC PnR (TRELLIS_COMB)
 PAPER_ABS = {"BRAM": (419, 2016), "DSP": (48, 9024), "FF": (324891, 2607360),
              "LUT": (251283, 1303680), "URAM": (778, 960)}
 
@@ -92,9 +93,38 @@ def table3(rows) -> str:
     return "\n".join(out)
 
 
+def heuristics(rows, pw) -> str:
+    """HLS algorithm vs. PigWeedSAT heuristics, same board and bitstream."""
+    import math
+    by = {r["name"]: r for r in pw}
+    out = ["### Heuristics — HLS algorithm vs. `host.pigweed()` (same bitstream)",
+           "",
+           "| Problem | HLS ms | heuristics ms | speedup | conflicts (HLS → heuristics) |",
+           "|---|---|---|---|---|"]
+    sp = []
+    for r in rows:
+        q = by.get(r["name"])
+        if not q or "conflicts" not in r or "conflicts" not in q:
+            continue
+        cell = lambda x: f"{x['ms']:,.2f}" if x["status"] == "ok" else x["status"]  # noqa: E731
+        speed = "—"
+        if r["status"] == q["status"] == "ok":
+            sp.append(r["ms"] / q["ms"])
+            speed = f"{sp[-1]:.2f}x"
+        out.append(f"| {r['name']} | {cell(r)} | {cell(q)} | {speed} | "
+                   f"{r['conflicts']:,} → {q['conflicts']:,} |")
+    gm = math.exp(sum(map(math.log, sp)) / len(sp))
+    out += ["", f"Geometric-mean speedup over the {len(sp)} instances both solve: {gm:.2f}x."]
+    return "\n".join(out)
+
+
 def main():
     rows = json.load(open(os.path.join(ROOT, "build", "table3_hw.json")))
-    md = "\n\n".join([table2(), table3(rows)])
+    parts = [table2(), table3(rows)]
+    pw_path = os.path.join(ROOT, "build", "table3_hw_pigweed.json")
+    if os.path.exists(pw_path):
+        parts.append(heuristics(rows, json.load(open(pw_path))))
+    md = "\n\n".join(parts)
     path = os.path.join(ROOT, "build", "paper_tables.md")
     open(path, "w").write(md + "\n")
     print(md)
