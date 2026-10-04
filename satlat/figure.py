@@ -85,11 +85,20 @@ def _milestones():
     return res
 
 
+IDLE_CAP = 0.5     # hours
+
+
 def _compute_panel(fig):
     """(d) Compute spend: cumulative model tokens over the session, milestones marked."""
     t, cum, parts, n, models = _token_series()
-    t0 = t[0]
-    hrs = [(x - t0).total_seconds() / 3600 for x in t]
+    # active hours: idle gaps longer than IDLE_CAP count as IDLE_CAP
+    hrs = [0.0]
+    for a, b in zip(t, t[1:]):
+        hrs.append(hrs[-1] + min((b - a).total_seconds() / 3600, IDLE_CAP))
+
+    def at(when):
+        """Active-hours position of a wall-clock time (the next logged response)."""
+        return next((x for x, w in zip(hrs, t) if w >= when), hrs[-1])
     M = [c / 1e6 for c in cum]
     dx = fig.add_axes([0.10, 0.072, 0.53, 0.09])
     dx.plot(hrs, M, color=C_ECP5, linewidth=2, zorder=3)
@@ -99,12 +108,13 @@ def _compute_panel(fig):
     dx.grid(axis="y", color=GRID, linewidth=0.8, zorder=0)
     dx.set_xlim(0, hrs[-1] * 1.02)
     dx.set_ylim(0, M[-1] * 1.45)
-    dx.set_xlabel("Hours into the Claude Code session", fontsize=8)
+    dx.set_xlabel(f"Active hours in Claude Code (idle gaps over {IDLE_CAP * 60:.0f} min removed)",
+                  fontsize=8)
     dx.set_ylabel("Cumulative tokens (M)", fontsize=8)
     dx.tick_params(labelsize=7.5)
     for k, (when, label) in enumerate(_milestones()):
-        h = (when - t0).total_seconds() / 3600
-        if 0 <= h <= hrs[-1]:
+        h = at(when)
+        if when >= t[0]:
             y = next((m for x, m in zip(hrs, M) if x >= h), M[-1])
             dx.plot([h], [y], marker="o", markersize=5, color=C_ECP5,
                     markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=4)
