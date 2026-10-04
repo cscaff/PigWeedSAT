@@ -1,0 +1,34 @@
+{
+  "mode": "pnr",
+  "ok": true,
+  "scope": "soc",
+  "fits": true,
+  "fmax_mhz": 69.43479919433594,
+  "sys_clk_mhz": 50.0,
+  "target_mhz": 50.0,
+  "timing_met": true,
+  "clock": "$glbnet$crg_clkout1",
+  "util": {
+    "logic": {
+      "used": 19376,
+      "available": 83640
+    },
+    "ff": {
+      "used": 7236,
+      "available": 83640
+    },
+    "bram": {
+      "used": 147,
+      "available": 208
+    },
+    "dsp": {
+      "used": 7,
+      "available": 156
+    }
+  },
+  "synth_cells": null,
+  "warnings": [],
+  "design_hash": "sha256:9df2f999591b2ea45ee98227e4395eec4f8572323bce491ebdcec55ed881c439",
+  "toolchain": "Yosys 0.66 / nextpnr-0.10",
+  "log_tail": "eset0_LUT4_Z.D\nInfo:                          Defined in:\nInfo:                               /tmp/mrg_build_sw1tw3f0/soc/gateware/cloud_fpga_soc.v:1026.15-1026.34\nInfo:      logic  0.14  3.67 Source ethphy_reset0_LUT4_Z.F\nInfo:    routing  0.21  3.89 Net ethphy_reset0 (26,50) -> (26,50)\nInfo:                          Sink FD1S3BX_7.LSR\nInfo:                          Defined in:\nInfo:                               /tmp/mrg_build_sw1tw3f0/soc/gateware/cloud_fpga_soc.v:1157.15-1157.28\nInfo:      setup  0.22  4.11 Source FD1S3BX_7.LSR\nInfo: 1.10 ns logic, 3.02 ns routing\n\nInfo: Critical path report for cross-domain path 'posedge $glbnet$crg_clkout1' -> 'posedge $glbnet$crg_clkout0':\nInfo:       type curr  total name\nInfo:   clk-to-q  0.31  0.31 Source dat_r_TRELLIS_FF_Q_18.Q\nInfo:    routing  0.49  0.80 Net dat_r[19] (37,30) -> (37,29)\nInfo:                          Sink bus_dat_r_TRELLIS_FF_Q_18.M\nInfo:                          Defined in:\nInfo:                               /tmp/mrg_build_sw1tw3f0/soc/gateware/cloud_fpga_soc.v:1010.15-1010.20\nInfo:      setup  0.00  0.80 Source bus_dat_r_TRELLIS_FF_Q_18.M\nInfo: 0.31 ns logic, 0.49 ns routing\n\nInfo: Critical path report for cross-domain path 'posedge $glbnet$eth_clocks_ref_clk$TRELLIS_IO_IN' -> 'posedge $glbnet$crg_clkout0':\nInfo:       type curr  total name\nInfo:   clk-to-q  0.31  0.31 Source core_tx_cdc_cdc_graycounter1_q_TRELLIS_FF_Q_1.Q\nInfo:    routing  0.65  0.96 Net core_tx_cdc_cdc_graycounter1_q[0] (23,55) -> (22,56)\nInfo:                          Sink multiregimpl20_TRELLIS_FF_Q.M\nInfo:                          Defined in:\nInfo:                               /opt/oss-cad-suite/lib/../share/yosys/lattice/cells_map_trellis.v:108.23-108.24\nInfo:      setup  0.00  0.96 Source multiregimpl20_TRELLIS_FF_Q.M\nInfo: 0.31 ns logic, 0.65 ns routing\n\nInfo: Max frequency for clock '$glbnet$eth_clocks_ref_clk$TRELLIS_IO_IN': 127.50 MHz (PASS at 50.00 MHz)\nInfo: Max frequency for clock                      '$glbnet$crg_clkout1': 69.43 MHz (PASS at 50.00 MHz)\nInfo: Max frequency for clock                      '$glbnet$crg_clkout0': 90.09 MHz (PASS at 50.00 MHz)\n\nInfo: Max delay <async>                                          -> posedge $glbnet$crg_clkout0                     : 0.56 ns\nInfo: Max delay posedge $glbnet$crg_clkout0                      -> <async>                                         : 5.83 ns\nInfo: Max delay posedge $glbnet$crg_clkout0                      -> posedge $glbnet$crg_clkout1                     : 0.98 ns\nInfo: Max delay posedge $glbnet$crg_clkout0                      -> posedge $glbnet$eth_clocks_ref_clk$TRELLIS_IO_IN: 4.11 ns\nInfo: Max delay posedge $glbnet$crg_clkout1                      -> posedge $glbnet$crg_clkout0                     : 0.80 ns\nInfo: Max delay posedge $glbnet$eth_clocks_ref_clk$TRELLIS_IO_IN -> posedge $glbnet$crg_clkout0                     : 0.96 ns\n\nInfo: Slack histogram:\nInfo:  legend: * represents 51 endpoint(s)\nInfo:          + represents [1,51) endpoint(s)\nInfo: [  5598,   6289) |+\nInfo: [  6289,   6980) |*+\nInfo: [  6980,   7671) |**+\nInfo: [  7671,   8362) |****+\nInfo: [  8362,   9053) |********+\nInfo: [  9053,   9744) |***********+\nInfo: [  9744,  10435) |*********+\nInfo: [ 10435,  11126) |**************+\nInfo: [ 11126,  11817) |***************+\nInfo: [ 11817,  12508) |*****************+\nInfo: [ 12508,  13199) |***************+\nInfo: [ 13199,  13890) |***************************+\nInfo: [ 13890,  14581) |******************************+\nInfo: [ 14581,  15272) |********************************+\nInfo: [ 15272,  15963) |************************************+\nInfo: [ 15963,  16654) |***************************************+\nInfo: [ 16654,  17345) |************************************************************ \nInfo: [ 17345,  18036) |****************************************************+\nInfo: [ 18036,  18727) |***************************************+\nInfo: [ 18727,  19418) |************************+\n\nInfo: Program finished normally.\n"
+}

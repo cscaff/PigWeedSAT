@@ -33,6 +33,7 @@ Host protocol (32-bit word registers; byte address = 4 * word):
 from amaranth.hdl import (Array, C, Cat, Elaboratable, Module, Mux, Signal,
                           Value, signed, unsigned)
 from amaranth.lib import data
+from amaranth.lib.fifo import SyncFIFO
 from amaranth.lib.memory import Memory
 
 # --------------------------------------------------------------------------
@@ -317,6 +318,77 @@ class _ClauseWalk:
         with m.State(f"{pfx}_CWJ"):
             m.d.sync += [self.addr.eq(p.cs.rdata), self.sub.eq(0)]
             m.next = on_item
+
+
+class _OccPipe:
+    """Pipelined occurrence-list walk with a clause-state update per element
+    (HLS colorStream -> updateStates{Forward,Backward} at II=1).
+
+      A  issue ls[addr]              (or, at a page end, the next-page pointer)
+      B  ls.rdata = clause id c1 ->  issue cst[c1-1]
+      C  cst.rdata                 ->  on_update(c1, state)   (caller writes cst)
+
+    One clause per cycle, one bubble per page jump.  No forwarding is needed:
+    a clause occurs at most once in a literal's list, so the updates in flight
+    always hit different clause states.  `can_issue` lets the caller throttle A.
+    Pulse `start` with `e` set; `done` pulses once the last update has left C."""
+
+    def __init__(self, p, P, name):
+        self.p = p
+        self.P = P
+        self.e = Signal(VAR_W + 1, name=f"{name}_op_e")
+        self.start = Signal(name=f"{name}_op_start")
+        self.done = Signal(name=f"{name}_op_done")
+        self.can_issue = Signal(init=1, name=f"{name}_op_can_issue")
+        self.c1 = Signal(CID_W, name=f"{name}_op_c1")   # stage C clause id
+        self.name = name
+
+    def elaborate_into(self, m, on_update):
+        p, P, n = self.p, self.P, self.name
+        addr = Signal(LA_W, name=f"{n}_op_addr")
+        num = Signal(LA_W + 1, name=f"{n}_op_num")
+        k = Signal(LA_W + 1, name=f"{n}_op_k")
+        i = Signal(FREE_W + 1, name=f"{n}_op_i")
+        ptr = Signal(name=f"{n}_op_ptr")        # this cycle: issue the next-page pointer read
+        jmp = Signal(name=f"{n}_op_jmp")        # this cycle: ls.rdata is the new page address
+        b_valid = Signal(name=f"{n}_op_bv")
+        c_valid = Signal(name=f"{n}_op_cv")
+
+        m.d.sync += [b_valid.eq(0), c_valid.eq(b_valid)]
+        with m.If(b_valid):                      # stage B
+            p.cst.read(m, p.ls.rdata - 1)
+            m.d.sync += self.c1.eq(p.ls.rdata)
+        with m.If(c_valid):                      # stage C
+            on_update(self.c1, p.cst.rdata)
+
+        with m.FSM(name=f"{n}_occpipe"):
+            with m.State("IDLE"):
+                with m.If(self.start):
+                    p.occ.read(m, self.e)
+                    m.next = "SETUP"
+            with m.State("SETUP"):
+                m.d.sync += [addr.eq(p.occ.rdata.start), num.eq(p.occ.rdata.num),
+                             k.eq(0), i.eq(0), ptr.eq(0), jmp.eq(0)]
+                m.next = "RUN"
+            with m.State("RUN"):                 # stage A
+                cur = Mux(jmp, p.ls.rdata, addr)
+                with m.If(jmp):
+                    m.d.sync += [addr.eq(p.ls.rdata), jmp.eq(0)]
+                with m.If(ptr):
+                    p.ls.read(m, addr + 1)
+                    m.d.sync += [ptr.eq(0), jmp.eq(1)]
+                with m.Elif((k < num) & self.can_issue):
+                    p.ls.read(m, cur)
+                    m.d.sync += [b_valid.eq(1), k.eq(k + 1), addr.eq(cur + 1)]
+                    with m.If((i + 1 == P - 2) & (k + 1 < num)):
+                        m.d.sync += [i.eq(0), ptr.eq(1)]
+                    with m.Else():
+                        m.d.sync += i.eq(i + 1)
+                with m.If((k == num) & ~ptr & ~jmp & ~b_valid & ~c_valid):
+                    m.next = "DONE"
+            with m.State("DONE"):
+                m.d.comb += self.done.eq(1)
+                m.next = "IDLE"
 
 
 class _OccWalk:
@@ -800,15 +872,20 @@ class Restart(Elaboratable):
 class Propagator(_Engine):
     """decide.cpp checkUndecided + discover.cpp (discover, updateStatesForward,
     controlSink) + color.cpp (forward): assign the decision / flipped / fixed
-    literals and propagate to a fixed point or the first conflict."""
+    literals and propagate to a fixed point or the first conflict.
+
+    Each trail literal's occurrence list streams through _OccPipe at one
+    clause per cycle; unit literals it finds queue in a FIFO and are applied
+    (discover) concurrently, in walk order, by a second FSM."""
 
     STATS = ("check_cnt",)
+    UNIT_FIFO = 16
 
     def __init__(self, mems, cfg):
         super().__init__()
         self.cfg = cfg
         self.p = _Ports(mems, "bcp", "stk", "meta", "lmmd", "ubc", "occ", "ls", "cst", "cmd")
-        self.ow = _OccWalk(self.p, cfg.P, "bcp")
+        self.pipe = _OccPipe(self.p, cfg.P, "bcp")
         # inputs (sampled at start)
         self.i_height = Signal(LVL_W)
         self.i_fixed = Signal(LVL_W)
@@ -829,16 +906,77 @@ class Propagator(_Engine):
     def elaborate(self, platform):  # noqa: C901
         m = Module()
         self._clear_stats(m)
-        p, ow, cfg = self.p, self.ow, self.cfg
+        p, pipe, cfg = self.p, self.pipe, self.cfg
         height, fixed, level = self.height, self.fixed, self.level
         conflict, nunsat = self.conflict, self.nunsat
         qh = Signal(LVL_W)
         bL = Signal(signed(LIT_W))
-        u_lit = Signal(signed(LIT_W))
-        u_m = Signal(L_META)
-        u_len = Signal(NUM_W)
         flipped, top_var = self.flipped, self.top_var
 
+        m.submodules.unit_fifo = fifo = SyncFIFO(width=LIT_W + CID_W, depth=self.UNIT_FIFO)
+        m.d.comb += pipe.can_issue.eq(fifo.level < self.UNIT_FIFO - 3)
+
+        def on_update(c1, st):                   # updateStatesForward
+            ncomp = (st.comp.as_unsigned() ^ (-bL)[:LIT_W])[:LIT_W].as_signed()
+            nrem = (st.rem - 1)[:REM_W]
+            p.cst.write(m, c1 - 1, pack(L_CST, comp=ncomp, rem=nrem))
+            with m.If((nrem == 1) & ~conflict):
+                m.d.comb += [fifo.w_en.eq(1), fifo.w_data.eq(Cat(ncomp, c1))]
+            with m.Elif(nrem == 0):
+                with m.If(nunsat == 0):
+                    m.d.sync += [self.unsat0.eq(c1), nunsat.eq(1)]
+                with m.Elif(nunsat == 1):
+                    m.d.sync += [self.unsat1.eq(c1), nunsat.eq(2)]
+                m.d.sync += conflict.eq(1)
+        pipe.elaborate_into(m, on_update)
+
+        # ---- discover: apply queued unit literals in order -----------------
+        u_lit = Signal(signed(LIT_W))
+        u_c1 = Signal(CID_W)
+        u_m = Signal(L_META)
+        u_len = Signal(NUM_W)
+        with m.FSM(name="discover") as dfsm:
+            with m.State("IDLE"):
+                with m.If(fifo.r_rdy):
+                    m.d.comb += fifo.r_en.eq(1)
+                    ul = fifo.r_data[:LIT_W].as_signed()
+                    uc = fifo.r_data[LIT_W:]
+                    m.d.sync += [u_lit.eq(ul), u_c1.eq(uc)]
+                    p.cmd.read(m, uc - 1)
+                    p.meta.read(m, var_of(ul))
+                    m.next = "U1"
+            with m.State("U1"):
+                v = var_of(u_lit)
+                mr = p.meta.rdata
+                m.d.sync += [u_m.eq(mr), u_len.eq(p.cmd.rdata.num)]
+                with m.If(~mr.stk):
+                    p.meta.write(m, v, pack(L_META, ins=height, dec=level, stk=1, phase=mr.phase,
+                                            ubl=bL, short=p.cmd.rdata.num))
+                    p.ubc.write(m, v, u_c1)
+                    p.stk.write(m, height, u_lit)
+                    p.lmmd.read(m, v)
+                    m.d.sync += height.eq(height + 1)
+                    m.next = "U2"
+                with m.Else():
+                    p.stk.read(m, mr.ins)
+                    m.next = "U3"
+            with m.State("U2"):
+                v = var_of(u_lit)
+                p.lmmd.write(m, v, pack(L_LMMD, keep=p.lmmd.rdata.keep, decide=0,
+                                        fix=p.lmmd.rdata.fix | (level == 0)))
+                with m.If(level == 0):
+                    m.d.sync += fixed.eq(fixed + 1)
+                m.next = "IDLE"
+            with m.State("U3"):                      # shorter reason for a duplicate
+                v = var_of(u_lit)
+                with m.If((p.stk.rdata == u_lit) & (u_m.ubl == bL) & (u_len < u_m.short)):
+                    p.ubc.write(m, v, u_c1)
+                    p.meta.write(m, v, pack(L_META, ins=u_m.ins, dec=u_m.dec, stk=u_m.stk,
+                                            phase=u_m.phase, ubl=u_m.ubl, short=u_len))
+                m.next = "IDLE"
+        units_idle = dfsm.ongoing("IDLE") & ~fifo.r_rdy
+
+        walked = Signal()
         with m.FSM():
             with m.State("IDLE"):
                 with m.If(self.start):
@@ -904,61 +1042,16 @@ class Propagator(_Engine):
                     m.d.sync += self.commit.eq(qh - 1)
                     m.next = "FIN"
             with m.State("Q_L"):
-                m.d.sync += [bL.eq(p.stk.rdata), qh.eq(qh + 1),
-                             ow.e.eq(Cat(p.stk.rdata > 0, var_of(p.stk.rdata)))]
+                m.d.sync += [bL.eq(p.stk.rdata), qh.eq(qh + 1), walked.eq(0)]
+                m.d.comb += [pipe.e.eq(Cat(p.stk.rdata > 0, var_of(p.stk.rdata))),
+                             pipe.start.eq(1)]
                 self._stat(m, "check_cnt")
-                m.next = "BW_OW0"
-            ow.states(m, "BW", "BI0", "Q")
-            with m.State("BI0"):                     # updateStatesForward
-                p.cst.read(m, ow.c1 - 1)
-                m.next = "BI1"
-            with m.State("BI1"):
-                ncomp = (p.cst.rdata.comp.as_unsigned() ^ (-bL)[:LIT_W])[:LIT_W].as_signed()
-                nrem = (p.cst.rdata.rem - 1)[:REM_W]
-                p.cst.write(m, ow.c1 - 1, pack(L_CST, comp=ncomp, rem=nrem))
-                with m.If((nrem == 1) & ~conflict):
-                    p.cmd.read(m, ow.c1 - 1)
-                    p.meta.read(m, var_of(ncomp))
-                    m.d.sync += u_lit.eq(ncomp)
-                    m.next = "BU1"
-                with m.Elif(nrem == 0):
-                    with m.If(nunsat == 0):
-                        m.d.sync += [self.unsat0.eq(ow.c1), nunsat.eq(1)]
-                    with m.Elif(nunsat == 1):
-                        m.d.sync += [self.unsat1.eq(ow.c1), nunsat.eq(2)]
-                    m.d.sync += conflict.eq(1)
-                    m.next = "BW_OWN"
-                with m.Else():
-                    m.next = "BW_OWN"
-            with m.State("BU1"):                     # discover: a unit literal
-                v = var_of(u_lit)
-                mr = p.meta.rdata
-                m.d.sync += [u_m.eq(mr), u_len.eq(p.cmd.rdata.num)]
-                with m.If(~mr.stk):
-                    p.meta.write(m, v, pack(L_META, ins=height, dec=level, stk=1, phase=mr.phase,
-                                            ubl=bL, short=p.cmd.rdata.num))
-                    p.ubc.write(m, v, ow.c1)
-                    p.stk.write(m, height, u_lit)
-                    p.lmmd.read(m, v)
-                    m.d.sync += height.eq(height + 1)
-                    m.next = "BU2"
-                with m.Else():
-                    p.stk.read(m, mr.ins)
-                    m.next = "BU3"
-            with m.State("BU2"):
-                v = var_of(u_lit)
-                p.lmmd.write(m, v, pack(L_LMMD, keep=p.lmmd.rdata.keep, decide=0,
-                                        fix=p.lmmd.rdata.fix | (level == 0)))
-                with m.If(level == 0):
-                    m.d.sync += fixed.eq(fixed + 1)
-                m.next = "BW_OWN"
-            with m.State("BU3"):                     # shorter reason for a duplicate
-                v = var_of(u_lit)
-                with m.If((p.stk.rdata == u_lit) & (u_m.ubl == bL) & (u_len < u_m.short)):
-                    p.ubc.write(m, v, ow.c1)
-                    p.meta.write(m, v, pack(L_META, ins=u_m.ins, dec=u_m.dec, stk=u_m.stk,
-                                            phase=u_m.phase, ubl=u_m.ubl, short=u_len))
-                m.next = "BW_OWN"
+                m.next = "WALK"
+            with m.State("WALK"):                    # wait for the walk and its units
+                with m.If(pipe.done):
+                    m.d.sync += walked.eq(1)
+                with m.If(walked & units_idle):
+                    m.next = "Q"
         return m
 
 
@@ -1225,14 +1318,14 @@ class Learner(_Engine):
 
 class Backtracker(_Engine):
     """backtrack.cpp undoStates + updateStatesBackward: pop `count` trail
-    literals, re-increment their clause states (walked ones only), unhide them
-    in the VSIDS heap and save their phase."""
+    literals, re-increment their clause states (walked ones only, via the
+    pipelined _OccPipe), unhide them in the VSIDS heap and save their phase."""
 
     def __init__(self, mems, cfg, pq):
         super().__init__()
         self.cfg = cfg
         self.p = _Ports(mems, "bt", "stk", "occ", "ls", "cst", "meta")
-        self.ow = _OccWalk(self.p, cfg.P, "bt")
+        self.pipe = _OccPipe(self.p, cfg.P, "bt")
         self.pq = pq.client("bt")
         self.pq_done = pq.done
         self.i_height = Signal(LVL_W)
@@ -1242,11 +1335,18 @@ class Backtracker(_Engine):
 
     def elaborate(self, platform):
         m = Module()
-        p, ow, cfg = self.p, self.ow, self.cfg
+        p, pipe, cfg = self.p, self.pipe, self.cfg
         height = self.height
         left = Signal(LVL_W)
         bL = Signal(signed(LIT_W))
         ud_v = Signal(VAR_W)
+
+        def on_update(c1, st):                   # updateStatesBackward
+            p.cst.write(m, c1 - 1, pack(
+                L_CST, comp=(st.comp.as_unsigned() ^ (-bL)[:LIT_W])[:LIT_W].as_signed(),
+                rem=st.rem + 1))
+        pipe.elaborate_into(m, on_update)
+
         with m.FSM():
             with m.State("IDLE"):
                 with m.If(self.start):
@@ -1263,21 +1363,16 @@ class Backtracker(_Engine):
                     m.d.sync += [height.eq(height - 1), left.eq(left - 1)]
                     m.next = "L"
             with m.State("L"):
-                m.d.sync += [bL.eq(p.stk.rdata), ud_v.eq(var_of(p.stk.rdata)),
-                             ow.e.eq(Cat(p.stk.rdata > 0, var_of(p.stk.rdata)))]
+                m.d.sync += [bL.eq(p.stk.rdata), ud_v.eq(var_of(p.stk.rdata))]
                 with m.If(height <= self.commit):
-                    m.next = "UD_OW0"
+                    m.d.comb += [pipe.e.eq(Cat(p.stk.rdata > 0, var_of(p.stk.rdata))),
+                                 pipe.start.eq(1)]
+                    m.next = "WALK"
                 with m.Else():
                     m.next = "META"
-            ow.states(m, "UD", "UI0", "UNHIDE")
-            with m.State("UI0"):
-                p.cst.read(m, ow.c1 - 1)
-                m.next = "UI1"
-            with m.State("UI1"):
-                p.cst.write(m, ow.c1 - 1, pack(
-                    L_CST, comp=(p.cst.rdata.comp.as_unsigned() ^ (-bL)[:LIT_W])[:LIT_W].as_signed(),
-                    rem=p.cst.rdata.rem + 1))
-                m.next = "UD_OWN"
+            with m.State("WALK"):
+                with m.If(pipe.done):
+                    m.next = "UNHIDE"
             with m.State("UNHIDE"):
                 PriorityQueue.call(m, self.pq, PriorityQueue.UNHIDE, ud_v)
                 m.next = "UNHIDE_W"
