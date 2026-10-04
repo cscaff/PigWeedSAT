@@ -1,0 +1,19 @@
+[mrg] building bitstream...
+[mrg] complete...
+✓ ready · pigweedsat_table3 on fpga2 · 761.0s
+landed on fpga2, user clock 65 MHz
+  out of clause memory hole7: res=-4 golden=-4 2,928,734 cycles = 45.057 ms @65MHz  dec=1231 confl=895 (paper SA 125 ms, SAT-Hard 330 ms)
+  out of clause memory hole8: res=-4 golden=-4 1,834,491 cycles = 28.223 ms @65MHz  dec=861 confl=572 (paper SA 691 ms, SAT-Hard 2270 ms)
+  out of clause memory hole9: res=-4 golden=-4 1,258,253 cycles = 19.358 ms @65MHz  dec=652 confl=393 (paper SA None ms, SAT-Hard 15290 ms)
+                    ok uf100-010: res=1 golden=1 312,002 cycles = 4.800 ms @65MHz  dec=253 confl=181 (paper SA 1 ms, SAT-Hard 580 ms)
+                    ok uuf100-02: res=0 golden=0 1,147,842 cycles = 17.659 ms @65MHz  dec=712 confl=568 (paper SA 4 ms, SAT-Hard 4940 ms)
+                    ok uf125-01: res=1 golden=1 764,957 cycles = 11.769 ms @65MHz  dec=492 confl=374 (paper SA 4 ms, SAT-Hard 1160 ms)
+                    ok uuf125-05: res=0 golden=0 2,692,075 cycles = 41.417 ms @65MHz  dec=1366 confl=1088 (paper SA 7 ms, SAT-Hard 4900 ms)
+                    ok uf150-08: res=1 golden=1 3,434,827 cycles = 52.843 ms @65MHz  dec=1477 confl=1151 (paper SA 1 ms, SAT-Hard 3920 ms)
+                    ok CBS_k3_n100_m403_b10_1: res=1 golden=1 427,232 cycles = 6.573 ms @65MHz  dec=321 confl=238 (paper SA 2 ms, SAT-Hard 2340 ms)
+                    ok aim-200-3_4-yes1-4: res=1 golden=1 277,734 cycles = 4.273 ms @65MHz  dec=436 confl=173 (paper SA 4 ms, SAT-Hard 1200 ms)
+                    ok aim-200-1_6-no-4: res=0 golden=0 25,231 cycles = 0.388 ms @65MHz  dec=236 confl=24 (paper SA 0.3 ms, SAT-Hard 10 ms)
+SKIP ii16e2: 7825 clauses > C_MAX 4096
+                    ok ii32e1: res=1 golden=1 16,496 cycles = 0.254 ms @65MHz  dec=41 confl=1 (paper SA 0.1 ms, SAT-Hard 20 ms)
+wrote /Users/christianscaff/Documents/Academics/Columbia/Barnard-PL-Lab/Fall 2026/SAT-Accel-Lattice/build/table3_hw.json. Free the board with: mrg reset 2
+EXIT 0
