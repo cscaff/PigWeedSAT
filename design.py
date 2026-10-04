@@ -971,6 +971,7 @@ class Learner(_Engine):
 
     def __init__(self, mems, cfg, pq):
         super().__init__()
+        self.cfg = cfg
         self.p = _Ports(mems, "ln", "cmd", "cs", "scr", "val", "meta", "lmmd", "rc", "stk",
                         "ubc", "tomin", "send")
         self.cw = _ClauseWalk(self.p, "ln")
@@ -1176,8 +1177,8 @@ class Learner(_Engine):
             with m.State("DECAY_W"):
                 with m.If(self.pq_done):
                     m.next = "CLR"
-            with m.State("CLR"):                     # ZERO_SEQ
-                with m.If(vc_i == N_MAX // 32):
+            with m.State("CLR"):                     # ZERO_SEQ (clearIterations words)
+                with m.If(vc_i == ((self.cfg.n_vars + 31) >> 5)):
                     m.d.sync += [bl_i.eq(0), level_before.eq(-1), self.uip.eq(0),
                                  self.ins0.eq(0), non_rem.eq(0), tomin_n.eq(0),
                                  mode_a.eq(~self.reset_all & ~found_abs)]
@@ -1301,8 +1302,9 @@ class Minimizer(_Engine):
 
     STATS = ("min_iter", "min_merge")
 
-    def __init__(self, mems):
+    def __init__(self, mems, cfg):
         super().__init__()
+        self.cfg = cfg
         self.p = _Ports(mems, "mn", "tomin", "lmmd", "ubc", "cmd", "cs", "scm", "vam", "mq")
         self.cw = _ClauseWalk(self.p, "mn")
         self.n = Signal(LRN_W)           # input: entries in tomin
@@ -1405,8 +1407,8 @@ class Minimizer(_Engine):
             with m.State("Q2"):
                 m.d.sync += next_c.eq(p.ubc.rdata)
                 m.next = "ITER"
-            with m.State("CLR"):                     # ZERO_SEQ_2
-                with m.If(vc_i == N_MAX // 32):
+            with m.State("CLR"):                     # ZERO_SEQ_2 (clearIterations words)
+                with m.If(vc_i == ((self.cfg.n_vars + 31) >> 5)):
                     m.d.sync += j.eq(j + 1)
                     m.next = "RD"
                 with m.Else():
@@ -1868,7 +1870,7 @@ class SATAccel(Elaboratable):
         prop = Propagator(mems, cfg)
         learn = Learner(mems, cfg, pq)
         back = Backtracker(mems, cfg, pq)
-        mini = Minimizer(mems)
+        mini = Minimizer(mems, cfg)
         save = ClauseSaver(mems, cfg, fcp, fid, flp, bk)
         prune = Pruner(mems, cfg, fcp, fid, flp, bk)
         engines = [prop, learn, back, mini, save, prune]
