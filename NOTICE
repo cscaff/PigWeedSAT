@@ -1,0 +1,11 @@
+PigWeedSAT
+Copyright 2026 Christian Scaff
+
+This product is an Amaranth HDL reimplementation of SAT-Accel
+("SAT-Accel: A Modern SAT Solver on a FPGA", M. Lo, M.-C. F. Chang, J. Cong,
+FPGA '25), based on its HLS sources (openhw-2025-SAT-FPGA, Team AOHW25-894:
+M. Lo, H. Ke, T. Nowatzki, J. Cong), licensed under the Apache License 2.0.
+
+SAT_test_cases/ is copied from openhw-2025-SAT-FPGA (Apache License 2.0).
+benchmarks/satlib/ contains instances from SATLIB (H. H. Hoos, T. Stuetzle),
+https://www.cs.ubc.ca/~hoos/SATLIB/.

@@ -158,7 +158,7 @@ def main():
     lx = fig.add_axes([0.06, 0.925, lw, lh])
     lx.imshow(logo)
     lx.axis("off")
-    fig.text(0.06 + lw + 0.02, 0.964, "From the seed of the SAT-Accel grows PigWeed (SAT).",
+    fig.text(0.06 + lw + 0.02, 0.964, "From the seed of SAT-Accel grows PigWeed (SAT).",
              fontsize=14, fontweight="bold", color=INK, va="center")
     fig.text(0.06 + lw + 0.02, 0.940,
              "An Amaranth HDL implementation of SAT-Accel (Lo, Chang & Cong, FPGA ’25) "

@@ -2,3 +2,6 @@
 __pycache__/
 build/synth/
 *.vcd
+build/pnrwork/
+benchmarks/satlib/tgz/
+benchmarks/satlib/x/
