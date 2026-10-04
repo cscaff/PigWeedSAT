@@ -501,6 +501,7 @@ class FreeList(_Service):
         self.ack = Signal(name=f"{name}_ack")
         self.bump_ok = Signal(name=f"{name}_bump_ok")
         self.empty = Signal(name=f"{name}_empty")
+        self.pages_left = Signal(addr_w + 2, name=f"{name}_pages_left")   # for 4-word pages
 
     def client(self, owner):
         return self._new_client(f"{owner}_{self.name}",
@@ -512,8 +513,11 @@ class FreeList(_Service):
         push = self._merged("push", 1)
         push_v = self._merged("push_v", self.addr_w)
         pop = self._merged("pop", 1)
-        m.d.comb += [self.bump_ok.eq(self.nxt + self.inc <= self.limit),
-                     self.empty.eq(~self.bump_ok & (self.cnt == 0))]
+        # Registered (one cycle behind nxt/cnt): pops are >= 3 cycles apart and
+        # clients check space long after the last push, so they never see a stale value.
+        m.d.sync += [self.bump_ok.eq(self.nxt + self.inc <= self.limit),
+                     self.empty.eq(~(self.nxt + self.inc <= self.limit) & (self.cnt == 0)),
+                     self.pages_left.eq(((self.limit - self.nxt) >> 2)[:self.addr_w + 1] + self.cnt)]
         ring_pop = Signal()
         with m.If(push):
             self._rp.write(m, self.tail, push_v)
@@ -662,6 +666,12 @@ class PriorityQueue(_Service):
         sl_rem = Signal(LVL_W)
         sl_l = Signal(LVL_W + 2)
         sl_left = Signal(L_HEAP)
+        sl_right = Signal(L_HEAP)
+        sl_lin = Signal()
+        sl_rin = Signal()
+        sl_e1 = Signal()
+        sl_e2 = Signal()
+        sl_e3 = Signal()
         sl_save = Signal(LVL_W + 1)
         sl_use_var = Signal(VAR_W)
         sl_done = Signal()
@@ -669,6 +679,12 @@ class PriorityQueue(_Service):
         sh_p = Signal(VAR_W)
         sh_save = Signal(VAR_W)
         bm_s = Signal(SCORE_W)
+        bm_old = Signal(SCORE_W)
+        fa_e = Signal(EXP_W)
+        fa_ma = Signal(FRAC_W + 1)
+        fa_mb = Signal(FRAC_W + 1)
+        fa_zero = Signal()
+        fa_nz = Signal(SCORE_W)
 
         with m.FSM() as fsm:
             m.d.comb += self.idle.eq(fsm.ongoing("IDLE") & ~cf.r_rdy)
@@ -740,16 +756,18 @@ class PriorityQueue(_Service):
                 heap.read(m, 2 * sl_p + 1)
                 m.next = "SL1"
             with m.State("SL1"):
-                m.d.sync += sl_left.eq(heap.rdata)
+                m.d.sync += [sl_left.eq(heap.rdata), sl_lin.eq(sl_l < sl_rem),
+                             sl_rin.eq(sl_l + 1 < sl_rem)]
                 heap.read(m, sl_l + 1)
                 m.next = "SL2"
-            with m.State("SL2"):
-                right = heap.rdata
-                lsc = Mux(sl_l < sl_rem, sl_left.s, 0)
-                rsc = Mux(sl_l + 1 < sl_rem, right.s, 0)
-                e1 = lsc > sl_x.s
-                e2 = lsc >= rsc
-                e3 = rsc > sl_x.s
+            with m.State("SL2"):                    # compare (split from select for timing)
+                lsc = Mux(sl_lin, sl_left.s, 0)
+                rsc = Mux(sl_rin, heap.rdata.s, 0)
+                m.d.sync += [sl_right.eq(heap.rdata), sl_e1.eq(lsc > sl_x.s),
+                             sl_e2.eq(lsc >= rsc), sl_e3.eq(rsc > sl_x.s)]
+                m.next = "SL2B"
+            with m.State("SL2B"):
+                right, e1, e2, e3 = sl_right, sl_e1, sl_e2, sl_e3
                 m.d.sync += sl_save.eq(sl_p)
                 with m.If(e3 & ~e2):
                     heap.write(m, sl_p, right)
@@ -800,8 +818,23 @@ class PriorityQueue(_Service):
                 m.d.sync += pq_p.eq(pos.rdata)
                 heap.read(m, pos.rdata)
                 m.next = "BM2"
-            with m.State("BM2"):
-                m.d.sync += bm_s.eq(fp_add(heap.rdata.s, mult))
+            with m.State("BM2"):                     # fp_add, split over 3 cycles for timing
+                m.d.sync += bm_old.eq(heap.rdata.s)
+                m.next = "BM2A"
+            with m.State("BM2A"):                    # order operands, align mantissas
+                a_, b_ = bm_old, mult
+                big = Mux(a_ < b_, b_, a_)
+                small = Mux(a_ < b_, a_, b_)
+                d = (big[FRAC_W:] - small[FRAC_W:])[:EXP_W]
+                m.d.sync += [fa_e.eq(big[FRAC_W:]), fa_ma.eq(Cat(big[:FRAC_W], C(1, 1))),
+                             fa_mb.eq(Cat(small[:FRAC_W], C(1, 1)) >> d),
+                             fa_zero.eq((a_ == 0) | (b_ == 0)), fa_nz.eq(a_ | b_)]
+                m.next = "BM2B"
+            with m.State("BM2B"):                    # add, normalize
+                sm = fa_ma + fa_mb
+                hi = sm[FRAC_W + 1]
+                res = Cat(Mux(hi, sm[1:FRAC_W + 1], sm[:FRAC_W]), (fa_e + hi)[:EXP_W])
+                m.d.sync += bm_s.eq(Mux(fa_zero, fa_nz, res))
                 m.next = "BM3"
             with m.State("BM3"):
                 heap.write(m, pq_p, pack(L_HEAP, s=bm_s, var=a))
@@ -996,6 +1029,7 @@ class Propagator(_Engine):
         units_idle = dfsm.ongoing("IDLE") & ~fifo.r_rdy
 
         walked = Signal()
+        q_e = Signal(VAR_W + 1)
         with m.FSM():
             with m.State("IDLE"):
                 with m.If(self.start):
@@ -1061,10 +1095,12 @@ class Propagator(_Engine):
                     m.d.sync += self.commit.eq(qh - 1)
                     m.next = "FIN"
             with m.State("Q_L"):
-                m.d.sync += [bL.eq(p.stk.rdata), qh.eq(qh + 1), walked.eq(0)]
-                m.d.comb += [pipe.e.eq(Cat(p.stk.rdata > 0, var_of(p.stk.rdata))),
-                             pipe.start.eq(1)]
+                m.d.sync += [bL.eq(p.stk.rdata), qh.eq(qh + 1), walked.eq(0),
+                             q_e.eq(Cat(p.stk.rdata > 0, var_of(p.stk.rdata)))]
                 self._stat(m, "check_cnt")
+                m.next = "Q_W"
+            with m.State("Q_W"):
+                m.d.comb += [pipe.e.eq(q_e), pipe.start.eq(1)]
                 m.next = "WALK"
             with m.State("WALK"):                    # wait for the walk and its units
                 with m.If(pipe.done):
@@ -1132,6 +1168,13 @@ class Learner(_Engine):
         bl_x = Signal(signed(LIT_W))
         mode_a = Signal()
         bv = Signal(VAR_W)
+        mg_v = Signal(VAR_W)
+        mg_pos0 = Signal(LRN_W)
+        mg_ins = Signal()
+        mg_st1 = Signal(2)
+        mg_last = Signal()
+        mg_m = Signal(L_META)
+        mg_l = Signal(L_LMMD)
 
         with m.FSM():
             with m.State("IDLE"):
@@ -1182,18 +1225,22 @@ class Learner(_Engine):
                 p.lmmd.read(m, v)
                 self._stat(m, "learn_merge")
                 m.next = "MG_B"
-            with m.State("MG_B"):
+            with m.State("MG_B"):                    # decode (split from act for timing)
                 v = var_of(cw.lit)
                 vbit = p.val.rdata.bit_select(v[:5], 1)
                 st0 = Mux(vbit, p.scr.rdata.st, 0)
-                pos0 = Mux(vbit, p.scr.rdata.pos, 0)
-                p.val.write(m, v >> 5, p.val.rdata | (C(1, 32) << v[:5])[:32])
                 bit = Mux(cw.lit > 0, 1, 2)
-                ins = (st0 & bit) == 0
-                st1 = (st0 | bit)[:2]
-                mr, lr = p.meta.rdata, p.lmmd.rdata
+                p.val.write(m, v >> 5, p.val.rdata | (C(1, 32) << v[:5])[:32])
+                m.d.sync += [mg_v.eq(v), mg_pos0.eq(Mux(vbit, p.scr.rdata.pos, 0)),
+                             mg_ins.eq((st0 & bit) == 0), mg_st1.eq((st0 | bit)[:2]),
+                             mg_last.eq(Mux(vbit, p.scr.rdata.pos, 0) == (num_el - 1)[:CNT_W]),
+                             mg_m.eq(p.meta.rdata), mg_l.eq(p.lmmd.rdata)]
+                m.next = "MG_C"
+            with m.State("MG_C"):
+                v, pos0, ins, st1 = mg_v, mg_pos0, mg_ins, mg_st1
+                mr, lr = mg_m, mg_l
                 with m.If(st1 == 3):
-                    with m.If(pos0 != (num_el - 1)[:CNT_W]):
+                    with m.If(~mg_last):
                         p.rc.write(m, pos0, poss)
                         m.d.sync += [res_pos.eq(pos0), rh.eq(1)]
                     with m.Else():
@@ -1357,6 +1404,7 @@ class Backtracker(_Engine):
         left = Signal(LVL_W)
         bL = Signal(signed(LIT_W))
         ud_v = Signal(VAR_W)
+        ud_e = Signal(VAR_W + 1)
 
         def on_update(c1, st):                   # updateStatesBackward
             p.cst.write(m, c1 - 1, pack(
@@ -1380,13 +1428,15 @@ class Backtracker(_Engine):
                     m.d.sync += [height.eq(height - 1), left.eq(left - 1)]
                     m.next = "L"
             with m.State("L"):
-                m.d.sync += [bL.eq(p.stk.rdata), ud_v.eq(var_of(p.stk.rdata))]
+                m.d.sync += [bL.eq(p.stk.rdata), ud_v.eq(var_of(p.stk.rdata)),
+                             ud_e.eq(Cat(p.stk.rdata > 0, var_of(p.stk.rdata)))]
                 with m.If(height <= self.commit):
-                    m.d.comb += [pipe.e.eq(Cat(p.stk.rdata > 0, var_of(p.stk.rdata))),
-                                 pipe.start.eq(1)]
-                    m.next = "WALK"
+                    m.next = "WALK0"
                 with m.Else():
                     m.next = "META"
+            with m.State("WALK0"):
+                m.d.comb += [pipe.e.eq(ud_e), pipe.start.eq(1)]
+                m.next = "WALK"
             with m.State("WALK"):
                 with m.If(pipe.done):
                     m.next = "UNHIDE"
@@ -1583,8 +1633,7 @@ class ClauseSaver(_Engine):
                 m.d.comb += self.done.eq(1)
                 m.next = "IDLE"
             with m.State("CHECK"):
-                cls_size = ((CE_MAX - fcp.nxt) >> 2)[:CA_W + 1] + fcp.cnt
-                with m.If((cls_size * (CLS_PAGE - 1) < non_rem) | fid.empty):
+                with m.If(((fcp.pages_left << 1) + fcp.pages_left < non_rem) | fid.empty):
                     m.d.sync += self.error.eq(-4)
                     m.next = "FIN"
                 with m.Else():
