@@ -6,8 +6,11 @@ MiniSat measured), (b) Table 2 block-RAM by module, (c) platform specs + cost.
 
 from __future__ import annotations
 
+import csv
+import datetime as dt
 import json
 import math
+import subprocess
 import os
 import textwrap
 
@@ -37,6 +40,94 @@ PLATFORMS = [
 ]
 
 
+def _token_series():
+    """Cumulative tokens per model response (from tools/token_log.py's CSV)."""
+    subprocess.run(["python3", os.path.join(ROOT, "tools", "token_log.py"), "--all"],
+                   check=True, capture_output=True)
+    rows = list(csv.DictReader(open(os.path.join(ROOT, "build", "token_usage.csv"))))
+    rows.sort(key=lambda r: r["timestamp"])
+    keys = ["input_tokens", "output_tokens", "cache_creation_input_tokens",
+            "cache_read_input_tokens"]
+    t, cum, tot = [], [], 0
+    parts = {k: 0 for k in keys}
+    for r in rows:
+        for k in keys:
+            parts[k] += int(r[k])
+            tot += int(r[k])
+        t.append(dt.datetime.fromisoformat(r["timestamp"].replace("Z", "+00:00")))
+        cum.append(tot)
+    return t, cum, parts, len(rows), sorted({r["model"] for r in rows})
+
+
+MILESTONES = [   # git commit subject prefix -> label
+    ("Monolithic", "port verified\non hardware"),
+    ("Refactor", "kernel\nsubmodules"),
+    ("Pipeline occurrence", "pipelined\nwalks"),
+    ("PQ command FIFO", "PQ FIFO +\nbacktrack ∥ min"),
+    ("Timing:", "timing\n(72 MHz Fmax)"),
+    ("65 MHz", "65 MHz on\nhardware"),
+]
+
+
+def _milestones():
+    out = subprocess.run(["git", "-C", ROOT, "log", "--reverse", "--format=%aI|%s"],
+                         capture_output=True, text=True).stdout.splitlines()
+    res = []
+    for prefix, label in MILESTONES:
+        for line in out:
+            when, subj = line.split("|", 1)
+            if subj.startswith(prefix):
+                res.append((dt.datetime.fromisoformat(when), label))
+                break
+    return res
+
+
+def _compute_panel(fig):
+    """(d) Compute spend: cumulative model tokens over the session, milestones marked."""
+    t, cum, parts, n, models = _token_series()
+    t0 = t[0]
+    hrs = [(x - t0).total_seconds() / 3600 for x in t]
+    M = [c / 1e6 for c in cum]
+    dx = fig.add_axes([0.10, 0.072, 0.53, 0.09])
+    dx.plot(hrs, M, color=C_ECP5, linewidth=2, zorder=3)
+    dx.set_facecolor(SURFACE)
+    for s in ("top", "right"):
+        dx.spines[s].set_visible(False)
+    dx.grid(axis="y", color=GRID, linewidth=0.8, zorder=0)
+    dx.set_xlim(0, hrs[-1] * 1.02)
+    dx.set_ylim(0, M[-1] * 1.45)
+    dx.set_xlabel("Hours into the Claude Code session", fontsize=8)
+    dx.set_ylabel("Cumulative tokens (M)", fontsize=8)
+    dx.tick_params(labelsize=7.5)
+    for k, (when, label) in enumerate(_milestones()):
+        h = (when - t0).total_seconds() / 3600
+        if 0 <= h <= hrs[-1]:
+            y = next((m for x, m in zip(hrs, M) if x >= h), M[-1])
+            dx.plot([h], [y], marker="o", markersize=5, color=C_ECP5,
+                    markeredgecolor=SURFACE, markeredgewidth=1.5, zorder=4)
+            dx.annotate(label, (h, y), xytext=(0, 8 + 22 * (k % 2)), textcoords="offset points",
+                        ha="center", va="bottom", fontsize=6.6, color=INK2,
+                        arrowprops=dict(arrowstyle="-", color=GRID, linewidth=0.8,
+                                        shrinkA=0, shrinkB=3))
+    fig.text(0.06, 0.178, "(d) Compute spend — tokens used to build and measure PigWeedSAT",
+             fontsize=11, fontweight="bold", color=INK, va="bottom")
+    total = sum(parts.values())
+    lines = [
+        (f"{total / 1e6:,.1f}M", "tokens in total"),
+        (f"{parts['cache_read_input_tokens'] / 1e6:,.1f}M",
+         f"cache reads ({100 * parts['cache_read_input_tokens'] / total:.0f}%): context re-read each turn"),
+        (f"{parts['cache_creation_input_tokens'] / 1e6:,.2f}M", "cache writes (new context)"),
+        (f"{parts['output_tokens'] / 1e6:,.2f}M", "output tokens (code, reasoning, tool calls)"),
+        (f"{n:,}", f"model responses · {', '.join(models)}"),
+    ]
+    y = 0.150
+    for big, small in lines:
+        fig.text(0.67, y, big, fontsize=12 if big == lines[0][0] else 9.5, fontweight="bold",
+                 color=INK, va="baseline")
+        fig.text(0.755, y, small, fontsize=7.6, color=INK2, va="baseline")
+        y -= 0.02
+
+
 def _fmt(ms: float) -> str:
     return f"{ms:,.0f}" if ms >= 100 else f"{ms:.3g}"
 
@@ -55,28 +146,27 @@ def main():
                          "axes.edgecolor": MUTED, "axes.labelcolor": INK2,
                          "xtick.color": INK2, "ytick.color": INK})
 
-    fig = plt.figure(figsize=(12.5, 12.6), facecolor=SURFACE)
-    gs = fig.add_gridspec(3, 2, height_ratios=[0.12, 1.0, 0.25], width_ratios=[1.9, 1],
-                          wspace=0.62, hspace=0.22)
+    W, H = 12.5, 15.4
+    fig = plt.figure(figsize=(W, H), facecolor=SURFACE)
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.9, 1], wspace=0.62,
+                          left=0.13, right=0.97, top=0.865, bottom=0.375)
 
     # ------------------------------------------------------------ header
-    hx = fig.add_subplot(gs[0, :])
-    hx.axis("off")
     logo = mpimg.imread(LOGO)
-    lh = 0.075
-    lw = lh * logo.shape[1] / logo.shape[0] * (12.6 / 12.5)
-    lx = fig.add_axes([0.06, 0.905, lw, lh])
+    lh = 0.062
+    lw = lh * logo.shape[1] / logo.shape[0] * (H / W)
+    lx = fig.add_axes([0.06, 0.925, lw, lh])
     lx.imshow(logo)
     lx.axis("off")
-    fig.text(0.06 + lw + 0.02, 0.952, "From the seed of the SAT-Accel grows PigWeed (SAT).",
+    fig.text(0.06 + lw + 0.02, 0.964, "From the seed of the SAT-Accel grows PigWeed (SAT).",
              fontsize=14, fontweight="bold", color=INK, va="center")
-    fig.text(0.06 + lw + 0.02, 0.922,
+    fig.text(0.06 + lw + 0.02, 0.940,
              "An Amaranth HDL implementation of SAT-Accel (Lo, Chang & Cong, FPGA ’25) "
              "on a Lattice ECP5-85F,\nmeasured on Manhattan Reasoning cloud FPGAs.",
              fontsize=9, color=INK2, va="center")
 
     # ---------------------------------------------------------- (a) Table 3
-    ax = fig.add_subplot(gs[1, 0])
+    ax = fig.add_subplot(gs[0, 0])
     series = [(f"PigWeedSAT — ECP5-85F @ {clk_mhz:g} MHz (measured)", C_ECP5, "ecp5"),
               ("SAT-Accel — U55C @ 230 MHz (paper)", C_SA, "sa_ms"),
               ("SAT-Hard — ZedBoard (paper)", C_SH, "sh_ms"),
@@ -112,7 +202,7 @@ def main():
     ax.legend(handles=[Patch(color=c, label=l) for l, c, _ in series], loc="upper center",
               bbox_to_anchor=(0.45, 1.075), ncol=2, frameon=False, fontsize=8, labelcolor=INK)
     ax.set_title("(a) Table 3 — SATLIB instances used by SAT-Hard", loc="left",
-                 fontsize=11, color=INK, fontweight="bold", pad=34)
+                 fontsize=11, color=INK, fontweight="bold", pad=44)
 
     ok = [r for r in rows if r.get("status") == "ok"]
     gm = lambda xs: math.exp(sum(math.log(x) for x in xs) / len(xs))  # noqa: E731
@@ -121,7 +211,7 @@ def main():
     gm_sa = gm([_ms(r) / r["sa_ms"] for r in ok])
 
     # ---------------------------------------------------------- (b) Table 2
-    bx = fig.add_subplot(gs[1, 1])
+    bx = fig.add_subplot(gs[0, 1])
     mods = list(TABLE2_BRAM.items())
     counts = [sum(v.values()) for _, v in mods]
     order = sorted(range(len(mods)), key=lambda k: counts[k])
@@ -139,12 +229,12 @@ def main():
     bx.set_facecolor(SURFACE)
     bx.set_xlim(0, max(counts) * 1.2)
     bx.set_title("(b) Table 2 — block RAM by module", loc="left", fontsize=11,
-                 color=INK, fontweight="bold", pad=34)
+                 color=INK, fontweight="bold", pad=44)
     bx.text(0, 1.03, "solver 123 / 208 DP16KD · full SoC 147\nSAT-Accel (U55C): 419 BRAM + 778 URAM",
             transform=bx.transAxes, fontsize=7.5, color=INK2)
 
     # ---------------------------------------------------------- (c) platforms
-    cx = fig.add_axes([0.06, 0.07, 0.91, 0.135])
+    cx = fig.add_axes([0.06, 0.205, 0.91, 0.11])
     cx.axis("off")
     cx.set_title("(c) Platforms", loc="left", fontsize=11, color=INK, fontweight="bold", pad=6)
     cols = ["", "Board", "FPGA", "Node", "Clock", "LUTs", "FFs", "Block RAM", "DSPs",
@@ -179,10 +269,11 @@ def main():
            "SAT-Accel and SAT-Hard times from Lo et al., FPGA ’25, Table 3; SAT-Hard platform from "
            "Ustaoglu et al., DSD ’19 (clock not reported, n/r).  MiniSat 2.2: default options, median CPU time of 11 runs "
            "(includes parsing; ~1 ms floor).  Board cost: mean of single-unit US list prices "
-           "(Oct 2026), board only, no host.")
+           "(Oct 2026), board only, no host.  Compute spend: Claude Code session transcripts "
+           "(tools/token_log.py); tokens as reported by the API, not dollars.")
     cap = "\n".join(textwrap.wrap(cap, 205))
-    fig.text(0.06, 0.012, cap, fontsize=7.3, color=INK2, va="bottom", ha="left")
-    fig.subplots_adjust(left=0.13, right=0.97, top=0.97, bottom=0.11)
+    _compute_panel(fig)
+    fig.text(0.06, 0.008, cap, fontsize=7.3, color=INK2, va="bottom", ha="left")
     out = os.path.join(ROOT, "build", "fig_paper_comparison")
     fig.savefig(out + ".png", dpi=200, facecolor=SURFACE)
     fig.savefig(out + ".pdf", facecolor=SURFACE)
