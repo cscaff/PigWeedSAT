@@ -1,0 +1,20 @@
+...................                                                      [100%]
+19 passed in 20.98s
+OK  SAT_test_cases/sat/aim50.dimacs: rtl=1 golden=1 cycles=30392 sim 658.0s
+OK  SAT_test_cases/sat/sudoku_6_2_3.dimacs: rtl=1 golden=1 cycles=13133 sim 658.0s
+OK  SAT_test_cases/sat/nqueens_8.dimacs: rtl=1 golden=1 cycles=43547 sim 658.0s
+OK  SAT_test_cases/unsat/4_4_1.txt: rtl=0 golden=0 cycles=78439 sim 658.0s
+OK  SAT_test_cases/unsat/aim100.dimacs: rtl=0 golden=0 cycles=45142 sim 658.0s
+OK  SAT_test_cases/unsat/ssa0432-003.dimacs: rtl=0 golden=0 cycles=287216 sim 658.0s
+BAD SAT_test_cases/unsat/dubois20.dimacs: rtl=0 golden=0 cycles=271897 sim 658.0s
+     reset: rtl=0 golden=1
+BAD SAT_test_cases/unsat/pret150_75.dimacs: rtl=0 golden=0 cycles=1364197 sim 658.0s
+     reset: rtl=0 golden=4
+BAD SAT_test_cases/unsat/4_4_2.txt: rtl=0 golden=0 cycles=1615346 sim 658.0s
+     reset: rtl=0 golden=2
+BAD benchmarks/satlib/table3/uf100-010.cnf: rtl=1 golden=1 cycles=675585 sim 658.0s
+     reset: rtl=0 golden=1
+BAD benchmarks/satlib/table3/CBS_k3_n100_m403_b10_1.cnf: rtl=1 golden=1 cycles=963426 sim 658.0s
+     reset: rtl=0 golden=2
+OK  benchmarks/satlib/table3/aim-200-1_6-no-4.cnf: rtl=0 golden=0 cycles=41565 sim 658.0s
+OK  benchmarks/satlib/table3/ii32e1.cnf: rtl=1 golden=1 cycles=30532 sim 658.0s
