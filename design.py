@@ -605,9 +605,15 @@ class PriorityQueue(_Service):
 
     Ops: INIT (loadPositioning), PEEK i (heap[i].var -> result), HIDE v
     (hideElement), UNHIDE v (unhideElement), BUMP v (decayEveryElement body,
-    incl. the rescale ADJUST loop), DECAY (multiplier *= 1/decay)."""
+    incl. the rescale ADJUST loop), DECAY (multiplier *= 1/decay).
+
+    Requests enter a command FIFO and execute strictly in order (the HLS
+    pqHandlerInput stream), so clients fire and forget: they only wait for
+    `ready` (FIFO not full).  PEEK answers with a `result_valid` pulse;
+    `idle` means every queued command has finished."""
 
     INIT, PEEK, HIDE, UNHIDE, BUMP, DECAY = 1, 2, 3, 4, 5, 6
+    CMD_FIFO = 32
 
     def __init__(self, n_vars, inv_decay):
         super().__init__()
@@ -617,8 +623,11 @@ class PriorityQueue(_Service):
         self.pos_ram = _RAM("pq_pos", unsigned(VAR_W), N_MAX)
         self.heap = self.heap_ram.port("pq")
         self.pos = self.pos_ram.port("pq")
-        self.done = Signal()
+        self.done = Signal()             # pulses as each command completes
         self.result = Signal(VAR_W)
+        self.result_valid = Signal()
+        self.ready = Signal()
+        self.idle = Signal()
         self.remaining = Signal(LVL_W)
         self.mult = Signal(SCORE_W)
 
@@ -634,8 +643,13 @@ class PriorityQueue(_Service):
         self.heap_ram.attach(m)
         self.pos_ram.attach(m)
         heap, pos = self.heap, self.pos
-        req, op, arg = self._merged("req", 1), self._merged("op", 3), self._merged("arg", LVL_W)
+        req, op_in, arg_in = (self._merged("req", 1), self._merged("op", 3),
+                              self._merged("arg", LVL_W))
         remaining, mult = self.remaining, self.mult
+        m.submodules.cmd_fifo = cf = SyncFIFO(width=3 + LVL_W, depth=self.CMD_FIFO)
+        m.d.comb += [cf.w_en.eq(req), cf.w_data.eq(Cat(op_in, arg_in)), self.ready.eq(cf.w_rdy)]
+        op = cf.r_data[:3]
+        arg = cf.r_data[3:]
 
         a = Signal(LVL_W)          # op argument (index or 0-based variable)
         i = Signal(LVL_W + 1)
@@ -656,9 +670,11 @@ class PriorityQueue(_Service):
         sh_save = Signal(VAR_W)
         bm_s = Signal(SCORE_W)
 
-        with m.FSM():
+        with m.FSM() as fsm:
+            m.d.comb += self.idle.eq(fsm.ongoing("IDLE") & ~cf.r_rdy)
             with m.State("IDLE"):
-                with m.If(req):
+                with m.If(cf.r_rdy):
+                    m.d.comb += cf.r_en.eq(1)
                     m.d.sync += a.eq(arg)
                     with m.Switch(op):
                         with m.Case(self.INIT):
@@ -692,7 +708,10 @@ class PriorityQueue(_Service):
                     m.d.sync += i.eq(i + 1)
             with m.State("PEEK"):
                 m.d.sync += self.result.eq(heap.rdata.var)
-                m.next = "DONE"
+                m.next = "PEEK_OUT"
+            with m.State("PEEK_OUT"):
+                m.d.comb += [self.done.eq(1), self.result_valid.eq(1)]
+                m.next = "IDLE"
 
             # hideElement + swapLower
             with m.State("H1"):
@@ -1069,7 +1088,7 @@ class Learner(_Engine):
                         "ubc", "tomin", "send")
         self.cw = _ClauseWalk(self.p, "ln")
         self.pq = pq.client("ln")
-        self.pq_done = pq.done
+        self.pq_ready = pq.ready
         # inputs
         self.nunsat = Signal(2)
         self.unsat0 = Signal(CID_W)
@@ -1140,9 +1159,8 @@ class Learner(_Engine):
                 m.next = "ITER"
             with m.State("ITER"):                    # RESOLUTION loop head
                 with m.If(is_uip | found_abs):
-                    PQ.call(m, self.pq, PQ.DECAY)
                     m.d.sync += vc_i.eq(0)
-                    m.next = "DECAY_W"
+                    m.next = "DECAY"
                 with m.Else():
                     self._stat(m, "learn_iter")
                     m.d.sync += [rh.eq(0), res_pos.eq(0), once.eq(highest != 0),
@@ -1206,11 +1224,9 @@ class Learner(_Engine):
                         m.next = "MG_CWN"
                 with m.Else():
                     m.next = "MG_CWN"
-            with m.State("BUMP"):                    # pqHandler UPDATE
-                PQ.call(m, self.pq, PQ.BUMP, bv)
-                m.next = "BUMP_W"
-            with m.State("BUMP_W"):
-                with m.If(self.pq_done):
+            with m.State("BUMP"):                    # pqHandler UPDATE (queued)
+                with m.If(self.pq_ready):
+                    PQ.call(m, self.pq, PQ.BUMP, bv)
                     m.next = "MG_CWN"
             with m.State("MG_END"):
                 with m.If(rh == 1):
@@ -1267,8 +1283,9 @@ class Learner(_Engine):
             with m.State("FN_DONE"):
                 m.d.sync += [trail_end.eq(fn_save), stream.eq(stream - 1)]
                 m.next = "ITER"
-            with m.State("DECAY_W"):
-                with m.If(self.pq_done):
+            with m.State("DECAY"):                   # pqHandler EXIT: multiplier decay (queued)
+                with m.If(self.pq_ready):
+                    PQ.call(m, self.pq, PQ.DECAY)
                     m.next = "CLR"
             with m.State("CLR"):                     # ZERO_SEQ (clearIterations words)
                 with m.If(vc_i == ((self.cfg.n_vars + 31) >> 5)):
@@ -1327,7 +1344,7 @@ class Backtracker(_Engine):
         self.p = _Ports(mems, "bt", "stk", "occ", "ls", "cst", "meta")
         self.pipe = _OccPipe(self.p, cfg.P, "bt")
         self.pq = pq.client("bt")
-        self.pq_done = pq.done
+        self.pq_ready = pq.ready
         self.i_height = Signal(LVL_W)
         self.count = Signal(LVL_W)
         self.commit = Signal(signed(LVL_W + 1))
@@ -1373,11 +1390,9 @@ class Backtracker(_Engine):
             with m.State("WALK"):
                 with m.If(pipe.done):
                     m.next = "UNHIDE"
-            with m.State("UNHIDE"):
-                PriorityQueue.call(m, self.pq, PriorityQueue.UNHIDE, ud_v)
-                m.next = "UNHIDE_W"
-            with m.State("UNHIDE_W"):
-                with m.If(self.pq_done):
+            with m.State("UNHIDE"):                  # unhideElement (queued)
+                with m.If(self.pq_ready):
+                    PriorityQueue.call(m, self.pq, PriorityQueue.UNHIDE, ud_v)
                     m.next = "META"
             with m.State("META"):
                 p.meta.read(m, ud_v)
@@ -1984,6 +1999,8 @@ class SATAccel(Elaboratable):
         top_var = Signal(VAR_W)
         reset_all = Signal()
         found_abs = Signal()
+        back_busy = Signal()
+        mini_busy = Signal()
         non_rem = Signal(CNT_W)
         did = Signal()
         level_before = Signal(signed(LVL_W + 1))
@@ -2061,7 +2078,9 @@ class SATAccel(Elaboratable):
                         tp.vam.write(m, init_i, 0)
                     m.d.sync += init_i.eq(init_i + 1)
             with m.State("INIT_PQ"):
-                with m.If(pq.done):
+                m.next = "INIT_PQ_W"
+            with m.State("INIT_PQ_W"):
+                with m.If(pq.idle):
                     m.next = "MAIN"
 
             # ================================ SOLVE_ITERATION ============
@@ -2085,10 +2104,11 @@ class SATAccel(Elaboratable):
 
             # FIND_TOP: pqHandler GET_UNDECIDED (scan heap slots in index order)
             with m.State("FT_PEEK"):
-                PriorityQueue.call(m, tpq, PriorityQueue.PEEK, ft_inc)
-                m.next = "FT_W"
+                with m.If(pq.ready):
+                    PriorityQueue.call(m, tpq, PriorityQueue.PEEK, ft_inc)
+                    m.next = "FT_W"
             with m.State("FT_W"):
-                with m.If(pq.done):
+                with m.If(pq.result_valid):
                     tp.meta.read(m, pq.result)
                     tp.tomin.write(m, ft_cnt, pq.result)
                     m.d.sync += [top_var.eq(pq.result), ft_cnt.eq(ft_cnt + 1),
@@ -2113,13 +2133,13 @@ class SATAccel(Elaboratable):
                 with m.Else():
                     tp.tomin.read(m, hide_i)
                     m.next = "HD_1"
-            with m.State("HD_1"):
-                PriorityQueue.call(m, tpq, PriorityQueue.HIDE, tp.tomin.rdata[:VAR_W])
-                m.d.sync += hide_i.eq(hide_i + 1)
-                m.next = "HD_W"
-            with m.State("HD_W"):
-                with m.If(pq.done):
+            with m.State("HD_1"):                    # hideElement (queued)
+                with m.If(pq.ready):
+                    PriorityQueue.call(m, tpq, PriorityQueue.HIDE, tp.tomin.rdata[:VAR_W])
+                    m.d.sync += hide_i.eq(hide_i + 1)
                     m.next = "HD_0"
+                with m.Else():
+                    tp.tomin.read(m, hide_i)         # hold the entry while the queue is full
 
             # discover / propagate
             with m.State("BCP"):
@@ -2159,23 +2179,25 @@ class SATAccel(Elaboratable):
                     with m.Else():
                         m.d.sync += [found_abs.eq(learn.found_abs), non_rem.eq(learn.non_rem),
                                      level_before.eq(learn.level_before), uip.eq(learn.uip),
-                                     ins0.eq(learn.ins0), phase.eq(PH_MIN)]
-                        m.d.comb += back.start.eq(1)
-                        m.next = "BACK_W"
-            with m.State("BACK_W"):
+                                     ins0.eq(learn.ins0), phase.eq(PH_MIN),
+                                     back_busy.eq(1), mini_busy.eq(~learn.found_abs)]
+                        # undo_states_and_minimize_task_parallel_wrapper: the two
+                        # kernels touch disjoint memories, so they run together.
+                        m.d.comb += [back.start.eq(1), mini.start.eq(~learn.found_abs)]
+                        m.next = "BACK_MIN_W"
+            with m.State("BACK_MIN_W"):
                 with m.If(back.done):
-                    m.d.sync += height.eq(back.height)
+                    m.d.sync += [height.eq(back.height), back_busy.eq(0)]
+                with m.If(mini.done):
+                    m.d.sync += [non_rem.eq(non_rem + mini.extra), did.eq(mini.did),
+                                 mini_busy.eq(0)]
+                with m.If(~back_busy & ~mini_busy):
                     with m.If(found_abs):
                         m.d.sync += level.eq(0)
                         m.next = "LEARN_DONE"
                     with m.Else():
-                        m.d.comb += mini.start.eq(1)
-                        m.next = "MIN_W"
-            with m.State("MIN_W"):
-                with m.If(mini.done):
-                    m.d.sync += [non_rem.eq(non_rem + mini.extra), did.eq(mini.did),
-                                 phase.eq(PH_SAVE)]
-                    m.next = "SAVE"
+                        m.d.sync += phase.eq(PH_SAVE)
+                        m.next = "SAVE"
             with m.State("SAVE"):
                 m.d.comb += save.start.eq(1)
                 m.next = "SAVE_W"
