@@ -1,0 +1,18 @@
+[mrg] building bitstream...
+[mrg] complete...
+✓ ready · sat_accel_ecp5 on fpga1 · 809.3s
+landed on fpga1
+  out of clause memory hole7: res=-4 golden=-4 9,246,875 cycles = 184.938 ms @50MHz  dec=1231 confl=895 (paper SA 125 ms, SAT-Hard 330 ms)
+  out of clause memory hole8: res=-4 golden=-4 5,286,243 cycles = 105.725 ms @50MHz  dec=861 confl=572 (paper SA 691 ms, SAT-Hard 2270 ms)
+  out of clause memory hole9: res=-4 golden=-4 3,224,982 cycles = 64.500 ms @50MHz  dec=652 confl=393 (paper SA None ms, SAT-Hard 15290 ms)
+                    ok uf100-010: res=1 golden=1 650,876 cycles = 13.018 ms @50MHz  dec=253 confl=181 (paper SA 1 ms, SAT-Hard 580 ms)
+                    ok uuf100-02: res=0 golden=0 2,761,810 cycles = 55.236 ms @50MHz  dec=712 confl=568 (paper SA 4 ms, SAT-Hard 4940 ms)
+                    ok uf125-01: res=1 golden=1 1,770,229 cycles = 35.405 ms @50MHz  dec=492 confl=374 (paper SA 4 ms, SAT-Hard 1160 ms)
+                    ok uuf125-05: res=0 golden=0 6,942,426 cycles = 138.849 ms @50MHz  dec=1366 confl=1088 (paper SA 7 ms, SAT-Hard 4900 ms)
+                    ok uf150-08: res=1 golden=1 9,028,971 cycles = 180.579 ms @50MHz  dec=1477 confl=1151 (paper SA 1 ms, SAT-Hard 3920 ms)
+                    ok CBS_k3_n100_m403_b10_1: res=1 golden=1 929,943 cycles = 18.599 ms @50MHz  dec=321 confl=238 (paper SA 2 ms, SAT-Hard 2340 ms)
+                    ok aim-200-3_4-yes1-4: res=1 golden=1 592,886 cycles = 11.858 ms @50MHz  dec=436 confl=173 (paper SA 4 ms, SAT-Hard 1200 ms)
+                    ok aim-200-1_6-no-4: res=0 golden=0 38,117 cycles = 0.762 ms @50MHz  dec=236 confl=24 (paper SA 0.3 ms, SAT-Hard 10 ms)
+SKIP ii16e2: 7825 clauses > C_MAX 4096
+                    ok ii32e1: res=1 golden=1 27,614 cycles = 0.552 ms @50MHz  dec=41 confl=1 (paper SA 0.1 ms, SAT-Hard 20 ms)
+wrote /Users/christianscaff/Documents/Academics/Columbia/Barnard-PL-Lab/Fall 2026/SAT-Accel-Lattice/build/table3_hw.json. Free the board with: mrg reset 1

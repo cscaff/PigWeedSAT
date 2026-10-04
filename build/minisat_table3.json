@@ -1,0 +1,85 @@
+{
+ "cpu": "Apple M4 Pro",
+ "solver": "MiniSat 2.2.0 (Homebrew), default options",
+ "runs": 11,
+ "results": {
+  "hole7": {
+   "ms": 24.264999999999997,
+   "min_ms": 24.166,
+   "result": "UNSAT",
+   "conflicts": 14247
+  },
+  "hole8": {
+   "ms": 147.441,
+   "min_ms": 145.995,
+   "result": "UNSAT",
+   "conflicts": 66083
+  },
+  "hole9": {
+   "ms": 1552.32,
+   "min_ms": 1538.6,
+   "result": "UNSAT",
+   "conflicts": 508528
+  },
+  "uf100-010": {
+   "ms": 1.09,
+   "min_ms": 1.0410000000000001,
+   "result": "SAT",
+   "conflicts": 143
+  },
+  "uuf100-02": {
+   "ms": 1.9269999999999998,
+   "min_ms": 1.9120000000000001,
+   "result": "UNSAT",
+   "conflicts": 587
+  },
+  "uf125-01": {
+   "ms": 1.266,
+   "min_ms": 1.246,
+   "result": "SAT",
+   "conflicts": 208
+  },
+  "uuf125-05": {
+   "ms": 2.82,
+   "min_ms": 2.7920000000000003,
+   "result": "UNSAT",
+   "conflicts": 927
+  },
+  "uf150-08": {
+   "ms": 1.195,
+   "min_ms": 1.175,
+   "result": "SAT",
+   "conflicts": 133
+  },
+  "CBS_k3_n100_m403_b10_1": {
+   "ms": 1.059,
+   "min_ms": 1.036,
+   "result": "SAT",
+   "conflicts": 138
+  },
+  "aim-200-3_4-yes1-4": {
+   "ms": 0.9470000000000001,
+   "min_ms": 0.919,
+   "result": "SAT",
+   "conflicts": 30
+  },
+  "aim-200-1_6-no-4": {
+   "ms": 0.925,
+   "min_ms": 0.905,
+   "result": "UNSAT",
+   "conflicts": 6
+  },
+  "ii16e2": {
+   "ms": 3.609,
+   "min_ms": 3.563,
+   "result": "SAT",
+   "conflicts": 15
+  },
+  "ii32e1": {
+   "ms": 2.064,
+   "min_ms": 2.045,
+   "result": "SAT",
+   "conflicts": 0
+  }
+ }
+}

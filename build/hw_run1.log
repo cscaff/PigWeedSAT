@@ -1,0 +1,21 @@
+[mrg] building bitstream...
+[mrg] complete...
+✓ ready · sat_accel_ecp5 on fpga2 · 763.0s
+board: fpga2
+landed on fpga2
+OK  SAT_test_cases/sat/aalto.dimacs: SAT dec=6 confl=0 rst=0 cycles=2,345 (0.05 ms @50MHz) wall=2.5s trajectory==golden model verified
+OK  SAT_test_cases/sat/quinn.dimacs: SAT dec=5 confl=1 rst=0 cycles=5,085 (0.10 ms @50MHz) wall=2.8s trajectory==golden model verified
+OK  SAT_test_cases/sat/uf20.dimacs: SAT dec=9 confl=6 rst=0 cycles=14,873 (0.30 ms @50MHz) wall=2.4s trajectory==golden model verified
+OK  SAT_test_cases/sat/nqueens_4.dimacs: SAT dec=6 confl=2 rst=0 cycles=19,460 (0.39 ms @50MHz) wall=2.6s trajectory==golden model verified
+OK  SAT_test_cases/sat/nqueens_8.dimacs: SAT dec=30 confl=10 rst=0 cycles=60,258 (1.21 ms @50MHz) wall=3.1s trajectory==golden model verified
+BAD SAT_test_cases/sat/aim50.dimacs: SAT dec=65 confl=15 rst=0 cycles=94,941 (1.90 ms @50MHz) wall=2.5s trajectory differs from golden model violates 4 clauses
+OK  SAT_test_cases/sat/sudoku_4_2_2.dimacs: SAT dec=10 confl=0 rst=0 cycles=99,209 (1.98 ms @50MHz) wall=2.8s trajectory==golden model verified
+OK  SAT_test_cases/sat/sudoku_6_2_3.dimacs: SAT dec=42 confl=0 rst=0 cycles=109,962 (2.20 ms @50MHz) wall=4.5s trajectory==golden model verified
+OK  SAT_test_cases/unsat/aalto_2.dimacs: UNSAT dec=30 confl=14 rst=0 cycles=133,073 (2.66 ms @50MHz) wall=2.0s trajectory differs from golden 
+OK  SAT_test_cases/unsat/nqueens_3.dimacs: UNSAT dec=40 confl=27 rst=0 cycles=197,921 (3.96 ms @50MHz) wall=2.2s trajectory differs from golden 
+OK  SAT_test_cases/unsat/4_4_1.txt: UNSAT dec=26 confl=18 rst=0 cycles=273,071 (5.46 ms @50MHz) wall=3.0s trajectory==golden 
+OK  SAT_test_cases/unsat/aim100.dimacs: UNSAT dec=223 confl=90 rst=0 cycles=368,333 (7.37 ms @50MHz) wall=2.3s trajectory differs from golden 
+OK  SAT_test_cases/unsat/dubois20.dimacs: UNSAT dec=498 confl=252 rst=2 cycles=809,961 (16.20 ms @50MHz) wall=2.2s trajectory differs from golden 
+OK  SAT_test_cases/unsat/ssa0432-003.dimacs: UNSAT dec=176 confl=57 rst=0 cycles=1,087,238 (21.74 ms @50MHz) wall=4.1s trajectory==golden 
+OK  SAT_test_cases/unsat/pret150_75.dimacs: UNSAT dec=2539 confl=701 rst=5 cycles=2,839,042 (56.78 ms @50MHz) wall=2.9s trajectory differs from golden 
+done: 1 failure(s). Free the board with: mrg reset 2
