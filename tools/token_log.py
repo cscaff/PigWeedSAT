@@ -17,6 +17,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJ = os.path.expanduser("~/.claude/projects/" + ROOT.replace("/", "-").replace(" ", "-"))
+# The project was renamed from SAT-Accel-Lattice; earlier sessions live under the old key.
+PROJ_DIRS = [PROJ, PROJ.replace("PigWeedSAT", "SAT-Accel-Lattice")]
 FIELDS = ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
 
 
@@ -40,7 +42,8 @@ def session_rows(path):
 
 
 def main(argv):
-    files = sorted(glob.glob(os.path.join(PROJ, "*.jsonl")), key=os.path.getmtime)
+    files = sorted({f for d in PROJ_DIRS for f in glob.glob(os.path.join(d, "*.jsonl"))},
+                   key=os.path.getmtime)
     if not files:
         sys.exit(f"no transcripts under {PROJ}")
     if "--all" not in argv:
