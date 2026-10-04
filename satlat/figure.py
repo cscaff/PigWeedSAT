@@ -46,7 +46,7 @@ def main():
     for i, r in enumerate(rows):
         y = len(rows) - 1 - i
         for j, (_, color, key) in enumerate(series):
-            val = (r.get("ms_50mhz") if r.get("status") == "ok" else None) if key == "ecp5" else r[key]
+            val = (r.get("ms", r.get("ms_50mhz")) if r.get("status") == "ok" else None) if key == "ecp5" else r[key]
             yy = y + (1.5 - j) * h
             if val is None:
                 note = ("ECP5: " + ("does not fit on-chip" if r.get("status") == "does not fit"
@@ -77,8 +77,8 @@ def main():
     ok = [r for r in rows if r.get("status") == "ok"]
     import math
     gm = lambda xs: math.exp(sum(math.log(x) for x in xs) / len(xs))
-    gm_sh = gm([r["sh_ms"] / r["ms_50mhz"] for r in ok])
-    gm_ms = gm([r["ms_50mhz"] / r["ms_ms"] for r in ok])
+    gm_sh = gm([r["sh_ms"] / r.get("ms", r.get("ms_50mhz")) for r in ok])
+    gm_ms = gm([r.get("ms", r.get("ms_50mhz")) / r["ms_ms"] for r in ok])
 
     # ---------------------------------------------------------- (b) Table 2
     mods = list(TABLE2_BRAM.items())

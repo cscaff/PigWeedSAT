@@ -1,0 +1,10 @@
+OK  benchmarks/satlib/table3/uf100-010.cnf: rtl=1 golden=1 cycles=299150 sim 311.9s
+OK  SAT_test_cases/unsat/dubois20.dimacs: rtl=0 golden=0 cycles=114290 sim 311.9s
+OK  SAT_test_cases/sat/aim50.dimacs: rtl=1 golden=1 cycles=17774 sim 311.9s
+OK  benchmarks/satlib/table3/ii32e1.cnf: rtl=1 golden=1 cycles=16285 sim 311.9s
+OK  benchmarks/satlib/table3/CBS_k3_n100_m403_b10_1.cnf: rtl=1 golden=1 cycles=411631 sim 311.9s
+OK  benchmarks/satlib/table3/aim-200-1_6-no-4.cnf: rtl=0 golden=0 cycles=23641 sim 311.9s
+OK  SAT_test_cases/unsat/pret150_75.dimacs: rtl=0 golden=0 cycles=570282 sim 311.9s
+OK  SAT_test_cases/unsat/4_4_2.txt: rtl=0 golden=0 cycles=599055 sim 311.9s
+...................                                                      [100%]
+19 passed in 17.92s

@@ -22,6 +22,7 @@ from satlat import host as H  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 BENCH = os.path.join(HERE, "benchmarks", "satlib", "table3")
 OUT = os.path.join(HERE, "build", "table3_hw.json")
+CLK_HZ = int(os.environ.get("MRG_SYS_CLK_FREQ", 50_000_000))   # user-design clock
 CFG = H.Config(lit_page=16, reset_multiplier=100, positive_phase=False, decay=0.95, prune=0.1)
 
 # (name, vars, clauses, expected, SAT-Accel ms, SAT-Hard ms) -- Table 3 of the paper
@@ -41,7 +42,7 @@ TABLE3 = [
     ("ii32e1", 222, 1186, 1, 0.1, 20),
 ]
 
-app = mrg.cloud.App("sat_accel_ecp5", design=os.path.join(HERE, "design.py"))
+app = mrg.cloud.App("pigweedsat_table3", design=os.path.join(HERE, "design.py"))
 
 
 @app.local_entrypoint()
@@ -49,7 +50,7 @@ def main():
     rows = []
     with app.stream() as s:
         bus = DRV.CloudBus(s)
-        print(f"landed on fpga{app.fpga_id}")
+        print(f"landed on fpga{app.fpga_id}, user clock {CLK_HZ / 1e6:g} MHz")
         for name, nv, nc, expect, sa_ms, sh_ms in TABLE3:
             row = dict(name=name, vars=nv, clauses=nc, expect=expect, sa_ms=sa_ms, sh_ms=sh_ms,
                        fpga=app.fpga_id)
@@ -65,7 +66,8 @@ def main():
             res, stats, model = DRV.solve(bus, img, timeout=600)
             wall = time.time() - t
             cyc = stats["cycles_lo"] | (stats["cycles_hi"] << 32)
-            row.update(result=res, golden=gres, cycles=cyc, ms_50mhz=cyc / 50e3,
+            row.update(result=res, golden=gres, cycles=cyc, clk_hz=CLK_HZ, ms=cyc / CLK_HZ * 1e3,
+                       ms_50mhz=cyc / 50e3,
                        decisions=stats["decide"], conflicts=stats["backtrack"],
                        restarts=stats["reset"], deleted=stats["deleted"],
                        phase_cycles=stats["cycle_counters"], host_load_s=stats["host_load_s"],
@@ -83,7 +85,7 @@ def main():
                                  -5: "out of literal-page memory"}.get(res, f"error {res}")
             rows.append(row)
             print(f"{row['status']:>22} {name}: res={res} golden={gres} {cyc:,} cycles = "
-                  f"{cyc / 50e3:.3f} ms @50MHz  dec={stats['decide']} confl={stats['backtrack']} "
+                  f"{cyc / CLK_HZ * 1e3:.3f} ms @{CLK_HZ / 1e6:g}MHz  dec={stats['decide']} confl={stats['backtrack']} "
                   f"(paper SA {sa_ms} ms, SAT-Hard {sh_ms} ms)")
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w") as f:

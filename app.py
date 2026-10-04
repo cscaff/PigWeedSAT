@@ -32,7 +32,7 @@ DEFAULT_CNFS = [
     f"{T}/unsat/ssa0432-003.dimacs", f"{T}/unsat/pret150_75.dimacs",
 ]
 
-app = mrg.cloud.App("sat_accel_ecp5", design=os.path.join(HERE, "design.py"))
+app = mrg.cloud.App("pigweedsat", design=os.path.join(HERE, "design.py"))
 
 
 @app.local_entrypoint()

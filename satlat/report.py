@@ -67,7 +67,7 @@ def table3(rows) -> str:
     for r in rows:
         sa = "N/A" if r["sa_ms"] is None else f"{r['sa_ms']:g}"
         if r.get("status") == "ok":
-            ms = r["ms_50mhz"]
+            ms = r.get("ms", r["ms_50mhz"])
             vs_sh = r["sh_ms"] / ms
             sp_sh.append(vs_sh)
             vs_sa = (r["sa_ms"] / ms) if r["sa_ms"] else None

@@ -1,8 +1,11 @@
-# SAT-Accel-Lattice
+# PigWeedSAT
 
-The openhw-2025 U55C HLS CDCL SAT solver (`openhw-2025-SAT-FPGA/hls/src`),
-reimplemented in **Amaranth HDL** for a **Lattice ECP5-85F** on the Manhattan
-Reasoning cloud-FPGA platform.
+*An Amaranth HDL Implementation of SAT-Accel on the Lattice ECP5.*
+
+The openhw-2025 U55C HLS CDCL SAT solver (SAT-Accel, FPGA '25;
+`openhw-2025-SAT-FPGA/hls/src`), reimplemented in **Amaranth HDL** for a
+**Lattice ECP5-85F** on the Manhattan Reasoning cloud-FPGA platform.  (Amaranth
+is a genus of pigweed.)
 
 | file | what |
 |---|---|

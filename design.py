@@ -1,4 +1,4 @@
-"""CDCL SAT accelerator for the Lattice ECP5-85F, in Amaranth HDL.
+"""PigWeedSAT: an Amaranth HDL implementation of SAT-Accel on the Lattice ECP5.
 
 A reimplementation of the openhw-2025 U55C HLS SAT solver
 (openhw-2025-SAT-FPGA/hls/src) as one Wishbone B4 slave for the Manhattan
