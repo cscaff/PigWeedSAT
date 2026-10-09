@@ -5,3 +5,4 @@ build/synth/
 build/pnrwork/
 benchmarks/satlib/tgz/
 benchmarks/satlib/x/
+build/gbd/
