@@ -24,15 +24,19 @@ COMPARED = ["total", "decide", "retry", "backtrack", "reset", "learn_iter",
 
 
 def simulate(img, max_cycles: int = 50_000_000, poll_every: int = 2000,
-             vcd: str | None = None):
+             vcd: str | None = None, abort_after: dict[int, int] | None = None):
     """Simulate one image, or a list of images solved back to back on one DUT
-    (as on the board, where BRAM keeps whatever the previous solve left)."""
+    (as on the board, where BRAM keeps whatever the previous solve left).
+
+    abort_after {index: cycles}: write CTRL abort that many cycles into that image's
+    solve; its out dict then holds "aborted", "abort_cycles" (until idle) and "ctrl"."""
+    abort_after = abort_after or {}
     imgs = img if isinstance(img, list) else [img]
     dut = D.SATAccel()
     outs: list = []
 
     async def bench(ctx):
-      for img in imgs:
+      for k, img in enumerate(imgs):
         out: dict = {}
         outs.append(out)
         async def wb(adr, dat=None):
@@ -73,7 +77,18 @@ def simulate(img, max_cycles: int = 50_000_000, poll_every: int = 2000,
         want = [x & ((1 << D.CS_W) - 1) for x in img.cls_store[:len(rb)]]
         assert rb == want, f"clause-store readback {rb} != {want}"
 
-        await wb(D.R_CTRL, 1)
+        await wb(D.R_CTRL, D.CTRL_GO)
+        if k in abort_after:
+            await ctx.tick().repeat(abort_after[k])
+            assert await wb(D.R_CTRL) & 1, "solve finished before the abort point"
+            await wb(D.R_CTRL, D.CTRL_ABORT)
+            n = 0
+            while (ctrl := await wb(D.R_CTRL)) & 1:
+                n += 1
+                assert n < 100, "solver still busy after CTRL abort"
+            out.update(aborted=True, abort_cycles=n, ctrl=ctrl,
+                       result=H.s32(await wb(D.R_RESULT)))
+            continue
         cycles = 0
         while True:
             await ctx.tick().repeat(poll_every)

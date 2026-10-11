@@ -35,7 +35,7 @@ Host protocol (32-bit word registers; byte address = 4 * word):
   of up to 256 words streams through the memory port.
 """
 
-from amaranth.hdl import (Array, C, Cat, Elaboratable, Module, Mux, Signal,
+from amaranth.hdl import (Array, C, Cat, Elaboratable, Module, Mux, ResetInserter, Signal,
                           Value, signed, unsigned)
 from amaranth.lib import data
 from amaranth.lib.fifo import SyncFIFO
@@ -80,10 +80,13 @@ RESCALE_EXP = 100     # rescale by 2^-100 once a score reaches 2^100  [1e100]
 SCORE_ONE = EXP_BIAS << FRAC_W
 
 MAGIC = 0x5A7ACCE1
-VERSION = 2           # 2: PigWeedSAT heuristics (registers 24..28)
+VERSION = 3           # 2: PigWeedSAT heuristics (registers 24..28); 3: CTRL abort
 
 # Wishbone register map (word addresses).
 R_CTRL, R_RESULT = 0, 1
+# R_CTRL write bits. GO starts a solve (idle only); ABORT resets the solver at any time,
+# leaving it idle with done = 0. R_CTRL reads back (busy, done) in bits 0 and 1.
+CTRL_GO, CTRL_ABORT = 1, 2
 R_NVARS, R_NCLS, R_LITELEMS, R_CLSELEMS, R_FIXED = 2, 3, 4, 5, 6
 R_POSPHASE, R_LITPAGE, R_RESETMULT, R_PRUNE, R_INVDECAY = 7, 8, 9, 10, 11
 R_MEMSEL, R_MEMPTR, R_MEMDATA = 12, 13, 14
@@ -1969,6 +1972,7 @@ class HostInterface(Elaboratable):
         self.p = _Ports(mems, "host", "ls", "cs", "cmd", "cst", "occ", "stk")
         self.idle = Signal()             # input: solver idle (memory access allowed)
         self.go = Signal()               # output: CTRL.start written
+        self.abort = Signal()            # output: CTRL.abort written (accepted while busy)
 
     def elaborate(self, platform):  # noqa: C901
         m = Module()
@@ -2035,6 +2039,10 @@ class HostInterface(Elaboratable):
                         m.d.comb += self.go.eq(dw[0])
             with m.If((wb_w | wb_r) & is_mem):
                 m.d.sync += [mem_ptr.eq(mem_ptr + 1), rd_odd.eq(mem_ptr[0])]
+
+        # Unlike every other register write, abort is taken while the solver is busy.
+        with m.If(wb_w & (adr == R_CTRL)):
+            m.d.comb += self.abort.eq(dw[1])
 
         caps = [N_MAX, C_MAX, LE_MAX, CE_MAX, MAX_LEARN, FRAC_W, MAGIC, VERSION]
         dr = b.wb_dat_r
@@ -2438,7 +2446,7 @@ class SATAccel(Elaboratable):
 
         # ------------------------------------------------ wiring ---------
         mems.attach(m)
-        for name, sub in [("host", host), ("pq", pq), ("free_lit_pages", flp),
+        for name, sub in [("pq", pq), ("free_lit_pages", flp),
                           ("free_cls_pages", fcp), ("free_cls_id", fid), ("lbd_buckets", bk),
                           ("restart", rst), ("propagator", prop), ("learner", learn),
                           ("backtracker", back), ("minimizer", mini), ("saver", save),
@@ -2450,4 +2458,12 @@ class SATAccel(Elaboratable):
                          flipped=flipped, fixed=fixed, total=tstat["total"], top_var=top_var,
                          commit=commit, remaining=pq.remaining)
         self._mem = {n: getattr(mems, n).mem for n, _, _ in Memories.SPEC}
-        return m
+
+        # CTRL abort: synchronous reset of everything above (solver FSM, kernels, services,
+        # counters). The host interface sits outside it, so the bus, the ack of the abort
+        # write itself and the configuration registers are untouched. RAM contents are not
+        # reset; the next solve's INIT and host load set what they need, as after any solve.
+        top = Module()
+        top.submodules.host = host
+        top.submodules.core = ResetInserter({"sync": host.abort})(m)
+        return top

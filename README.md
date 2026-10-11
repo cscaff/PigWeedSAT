@@ -131,8 +131,9 @@ tallies the Claude Code tokens spent on the project (figure panel d).
 
 ## Host protocol
 
-Word registers (byte address = 4 × word): `0` CTRL (W bit0 start / R bit0
-busy, bit1 done), `1` RESULT (1 SAT, 0 UNSAT, <0 HLS error), `2..11` config,
+Word registers (byte address = 4 × word): `0` CTRL (W bit0 start, bit1 abort /
+R bit0 busy, bit1 done; abort is accepted mid-solve and resets the solver to idle,
+which `driver.solve()` uses on a timeout), `1` RESULT (1 SAT, 0 UNSAT, <0 HLS error), `2..11` config,
 `12..14` MEM_SEL / MEM_PTR / MEM_DATA, `16..23` capabilities + magic,
 `24..28` heuristics (LOW_CP, LOW_LP, GLUE, FLAGS = used | min_abstract << 1,
 REPHASE), `32..53` statistics, `64..81` per-phase cycle counters. Words 256..511 alias

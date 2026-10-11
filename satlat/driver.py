@@ -86,20 +86,42 @@ def read_stack(bus, height: int) -> list[int]:
     return [H.s32(x) for x in bus.read_fifo(height)]
 
 
+class SolveTimeout(TimeoutError):
+    """The solve passed its timeout and was aborted; `stats` are the counters at that point."""
+
+    def __init__(self, stats):
+        super().__init__("solver did not finish; aborted")
+        self.stats = stats
+
+
+def abort(bus, timeout: float = 5.0, poll: float = 0.01) -> None:
+    """Stop a running solve (CTRL abort) and wait until the solver is idle."""
+    bus.write(D.R_CTRL, D.CTRL_ABORT)
+    t = time.time()
+    while bus.read(D.R_CTRL) & 1:
+        if time.time() - t > timeout:
+            raise RuntimeError("solver still busy after CTRL abort")
+        time.sleep(poll)
+
+
 def solve(bus, img: H.Images, timeout: float = 600.0, poll: float = 0.05, verbose=False):
-    """Load, run, and return (result, stats, model-or-None)."""
+    """Load, run, and return (result, stats, model-or-None). Past `timeout` the solve is
+    aborted, leaving the board idle, and SolveTimeout carries the counters reached."""
     check_caps(bus, img)
     t0 = time.time()
     load(bus, img)
     t_load = time.time() - t0
-    bus.write(D.R_CTRL, 1)
+    bus.write(D.R_CTRL, D.CTRL_GO)
     t1 = time.time()
     while True:
         ctrl = bus.read(D.R_CTRL)
         if ctrl & 2:
             break
         if time.time() - t1 > timeout:
-            raise TimeoutError("solver did not finish")
+            stats = read_stats(bus)
+            stats["host_load_s"] = t_load
+            abort(bus)
+            raise SolveTimeout(stats)
         time.sleep(poll)
     result = H.s32(bus.read(D.R_RESULT))
     stats = read_stats(bus)

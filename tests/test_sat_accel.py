@@ -94,3 +94,23 @@ def test_rtl_heuristics_match_golden(case, stress):
 def test_rtl_heuristics_back_to_back():
     seq = ["sat/nqueens_8.dimacs", "unsat/aim100.dimacs", "sat/aim50.dimacs", "sat/uf20.dimacs"]
     assert rtlsim.check_seq([os.path.join(T, c) for c in seq], H.Config(**STRESS[0]), verbose=False)
+
+
+# ------------------------------------------------------------ abort --
+ABORT_SEQ = ["unsat/pret150_75.dimacs", "sat/aim50.dimacs", "sat/uf20.dimacs",
+             "unsat/aalto_2.dimacs"]
+
+
+@pytest.mark.parametrize("cfg", [None, H.pigweed()], ids=["hls", "pigweed"])
+@pytest.mark.parametrize("at", [100, 6_000, 40_000], ids=["init", "early", "search"])
+def test_rtl_abort_then_solve(at, cfg):
+    """CTRL abort mid-solve leaves the solver idle within a few cycles with done = 0, and
+    the solves after it on the same DUT (BRAM left as the aborted solve had it) still match
+    the golden model exactly. The second instance is aborted during its INIT as well."""
+    paths = [os.path.join(T, c) for c in ABORT_SEQ]
+    imgs = [H.load_cnf(p, cfg) for p in paths]
+    outs = rtlsim.simulate(imgs, abort_after={0: at, 1: 3_000})
+    for o in outs[:2]:
+        assert o["aborted"] and o["ctrl"] == 0 and o["result"] == 0 and o["abort_cycles"] <= 2
+    for p, img, out in list(zip(paths, imgs, outs))[2:]:
+        assert rtlsim._compare(p, img, out, 0, verbose=True)
