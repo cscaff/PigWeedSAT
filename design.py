@@ -46,9 +46,9 @@ from amaranth.lib.memory import Memory
 # (HLS originals in brackets: the U55C build used URAM/HBM we don't have.)
 # --------------------------------------------------------------------------
 N_MAX = 2048          # variables                       [_FPGA_MAX_LITERALS 32768]
-C_MAX = 4096          # clauses, original + learned     [_FPGA_MAX_CLAUSES 131072]
-LE_MAX = 16384        # literal-store words (occurrence lists)  [1M]
-CE_MAX = 16384        # clause-store words (clause bodies)      [1M]
+C_MAX = 8192          # clauses, original + learned     [_FPGA_MAX_CLAUSES 131072]
+LE_MAX = 24576        # literal-store words (occurrence lists)  [1M]; need not be 2^k
+CE_MAX = 24576        # clause-store words (clause bodies)      [1M]; need not be 2^k
 MAX_LEARN = 1024      # longest learned clause before resolution  [_FPGA_MAX_LEARN_ELE]
 LBD_BUCKETS = 10      # [_FPGA_MAX_LBD_BUCKETS]
 CLS_PAGE = 4          # clause-store page: 3 literals + next pointer
@@ -218,10 +218,13 @@ class _RAM:
     """A block RAM: one read port (1-cycle, write-transparent) and one write port,
     multiplexed over any number of client ports (see _Port)."""
 
-    def __init__(self, name, shape, depth):
+    def __init__(self, name, shape, depth, distributed=False):
         self.name = name
         self.depth = depth
-        self.mem = Memory(shape=shape, depth=depth, init=[])
+        # distributed: ask Yosys for LUT RAM instead of a DP16KD (for memories far
+        # smaller than an 18 Kb block, where a whole block would mostly go unused)
+        self.mem = Memory(shape=shape, depth=depth, init=[],
+                          attrs={"ram_style": "distributed"} if distributed else None)
         self.w = self.mem.write_port()
         self.r = self.mem.read_port(transparent_for=(self.w,))
         self.rdata = self.r.data
@@ -274,9 +277,13 @@ class Memories:
         ("dl5", unsigned(5), N_MAX),              # implied literal's decision level mod 32
     ]
 
+    # Each of these holds at most 10 Kb but would take a whole 18 Kb DP16KD; in LUT
+    # RAM they free 7 blocks, which the 24K-word stores and 8K clauses need to fit 208.
+    DISTRIBUTED = {"val", "vam", "best", "scm", "lmmd", "dl5"}
+
     def __init__(self):
         for name, shape, depth in self.SPEC:
-            setattr(self, name, _RAM(name, shape, depth))
+            setattr(self, name, _RAM(name, shape, depth, distributed=name in self.DISTRIBUTED))
 
     def attach(self, m):
         for name, _, _ in self.SPEC:
@@ -502,6 +509,7 @@ class FreeList(_Service):
         self.ring = _RAM(f"{name}_ring", unsigned(addr_w), ring_depth)
         self._rp = self.ring.port("fl")
         self.addr_w = addr_w
+        self.ring_depth = ring_depth
         self.limit = limit
         self.inc = inc
         self.inc_log2 = inc_log2
@@ -535,9 +543,16 @@ class FreeList(_Service):
                      self.pages_left.eq(((self.limit - self.nxt)[:self.addr_w + 2] >> self.inc_log2)
                                         + self.cnt)]
         ring_pop = Signal()
+        # Ring indices wrap at ring_depth; with a power-of-two depth this is the
+        # counter's own overflow, otherwise (e.g. LE_MAX = 24K) an explicit wrap.
+        last = self.ring_depth - 1
+
+        def step(i):
+            return i + 1 if self.ring_depth & last == 0 else Mux(i == last, 0, i + 1)
+
         with m.If(push):
             self._rp.write(m, self.tail, push_v)
-            m.d.sync += self.tail.eq(self.tail + 1)
+            m.d.sync += self.tail.eq(step(self.tail))
         m.d.sync += self.cnt.eq(self.cnt + push - ring_pop)
         with m.FSM():
             with m.State("IDLE"):
@@ -548,7 +563,7 @@ class FreeList(_Service):
                     with m.Else():
                         self._rp.read(m, self.head)
                         m.d.comb += ring_pop.eq(1)
-                        m.d.sync += self.head.eq(self.head + 1)
+                        m.d.sync += self.head.eq(step(self.head))
                         m.next = "RD"
             with m.State("RD"):
                 m.d.sync += self.val.eq(self.ring.rdata)

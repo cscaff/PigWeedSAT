@@ -114,3 +114,49 @@ def test_rtl_abort_then_solve(at, cfg):
         assert o["aborted"] and o["ctrl"] == 0 and o["result"] == 0 and o["abort_cycles"] <= 2
     for p, img, out in list(zip(paths, imgs, outs))[2:]:
         assert rtlsim._compare(p, img, out, 0, verbose=True)
+
+
+# ------------------------------------------------------------ free lists --
+@pytest.mark.parametrize("depth", [6, 8])
+def test_free_list_ring_wraps(depth):
+    """The FreeList ring is a FIFO at any depth, including one that is not a power of
+    two (LE_MAX = 24K gives 6,144 entries): many laps of push/pop must return the
+    pushed values in order, with the bump allocator already exhausted."""
+    import random
+    from collections import deque
+    from amaranth.sim import Simulator
+    D = rtlsim.D
+    fl = D.FreeList("t", 8, depth, limit=10, inc=1, inc_log2=0)
+    c = fl.client("tb")
+    rng, want, got = random.Random(depth), deque(), []
+
+    async def bench(ctx):
+        ctx.set(fl.start, 10)                       # start == limit: every pop uses the ring
+        ctx.set(fl.reset, 1)
+        await ctx.tick()
+        ctx.set(fl.reset, 0)
+        await ctx.tick().repeat(2)
+        for step in range(40 * depth):
+            if want and (len(want) == depth or rng.random() < 0.5):
+                ctx.set(c.pop, 1)
+                await ctx.tick()
+                ctx.set(c.pop, 0)
+                while not ctx.get(fl.ack):
+                    await ctx.tick()
+                got.append(ctx.get(fl.val))
+                assert got[-1] == want.popleft(), f"step {step}"
+                await ctx.tick()
+            else:
+                v = rng.randrange(256)
+                ctx.set(c.push, 1)
+                ctx.set(c.push_v, v)
+                await ctx.tick()
+                ctx.set(c.push, 0)
+                want.append(v)
+                await ctx.tick().repeat(2)
+
+    sim = Simulator(fl)
+    sim.add_clock(1e-6)
+    sim.add_testbench(bench)
+    sim.run()
+    assert len(got) > 10 * depth                    # several laps around the ring
